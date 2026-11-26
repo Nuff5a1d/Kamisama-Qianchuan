@@ -185,10 +185,10 @@ async function handleDispatchAlert(payload) {
     }
   }
 
-  // 5. Bark（iPhone 强推送）
+  // 5. Bark（iPhone 强推送，自动兼容整段 curl 示例 / 带 /title/body 的链接 / 纯 Key）
   if (channels?.barkUrl?.trim()) {
     try {
-      const base = channels.barkUrl.trim().replace(/\/+$/, "");
+      const base = normalizeBarkUrl(channels.barkUrl);
       const endpoint = `${base}/${encodeURIComponent(title)}/${encodeURIComponent(
         [summary, ...(detailLines || []).slice(0, 2)].join(" | ")
       )}?group=ROI监控&sound=alarm`;
@@ -204,6 +204,19 @@ async function handleDispatchAlert(payload) {
   }
 
   return results;
+}
+
+function normalizeBarkUrl(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  const urlMatch = s.match(/(https?:\/\/[^/\s"'`]+)\/([A-Za-z0-9_-]{8,})/i);
+  if (urlMatch) {
+    return `${urlMatch[1]}/${urlMatch[2]}`;
+  }
+  if (/^[A-Za-z0-9_-]{12,}$/.test(s)) {
+    return `https://api.day.app/${s}`;
+  }
+  return s.replace(/\/+$/, "");
 }
 
 async function safeJson(resp) {
