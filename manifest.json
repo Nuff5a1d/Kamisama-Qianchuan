@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "千川 ROI 实时监控告警",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "巨量千川（全域推商品/推直播间/标准投放）/ 实时大屏 / 任意网页 ROI 秒级监控与页面异常告警，支持企业微信、PushPlus、飞书、钉钉、Bark 及桌面弹窗。",
   "permissions": [
     "storage",

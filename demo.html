@@ -68,11 +68,15 @@
   <div class="sub">模拟真实千川 Arco/Semi 表头表体分离结构、共N条计划汇总行、目标ROI干扰列、双行「基础」数值、万单位消耗及登录失效/报错弹窗。</div>
 
   <div class="cards">
-    <div class="card">
-      <div class="card-label">整体支付ROI</div>
-      <div class="card-row">
-        <div class="card-value" id="liveRoi">3.00</div>
-        <div class="card-trend">+4.17%</div>
+    <div class="card total_prepay_and_pay_order_roi2">
+      <div class="oc-promotion-metric-card">
+        <div class="oc-statistic">
+          <div class="oc-statistic-title"><span class="card-label">整体支付ROI</span></div>
+          <div class="card-row">
+            <div class="card-value oc-promotion-metric-card-number" id="liveRoi"><span class="oc-promotion-metric-card-number-val"><span class="oc-typography-value-int">3</span></span><span class="oc-promotion-metric-card-number-tail"><span class="oc-typography-value-int oc-typography-value-slot">.</span><span class="oc-typography-value-int">00</span></span></div>
+            <div class="card-trend">+4.17%</div>
+          </div>
+        </div>
       </div>
       <div class="actions">
         <button onclick="setLiveRoi(1.12)">跌破下限 (1.12)</button>
@@ -204,7 +208,10 @@
   <script>
     let tickTimer = null;
     function setLiveRoi(val) {
-      document.getElementById("liveRoi").textContent = Number(val).toFixed(2);
+      const [intPart, decPart] = Number(val).toFixed(2).split(".");
+      document.getElementById("liveRoi").innerHTML =
+        `<span class="oc-promotion-metric-card-number-val"><span class="oc-typography-value-int">${intPart}</span></span>` +
+        `<span class="oc-promotion-metric-card-number-tail"><span class="oc-typography-value-int oc-typography-value-slot">.</span><span class="oc-typography-value-int">${decPart}</span></span>`;
     }
     function toggleAutoTick() {
       const btn = document.getElementById("autoTickBtn");
@@ -215,7 +222,7 @@
       } else {
         btn.textContent = "停止自动跳数";
         tickTimer = setInterval(() => {
-          const cur = Number(document.getElementById("liveRoi").textContent);
+          const cur = Number(document.getElementById("liveRoi").textContent.replace(/\s+/g, ""));
           const next = Math.max(0.5, cur + (Math.random() - 0.5) * 0.6);
           setLiveRoi(next);
         }, 1500);
