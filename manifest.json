@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "千川 ROI 实时监控告警",
-  "version": "1.2.2",
-  "description": "巨量千川（千川乘方/调控任务/全域推商品/推直播间）/ 实时大屏 / 任意网页 ROI、预算撞墙、灰保过保与页面异常秒级监控告警，支持企微、PushPlus、飞书、钉钉、Bark 三层持久化推送。",
+  "name": "Kamisama - 全链路千川",
+  "version": "1.3.0",
+  "description": "Kamisama - 全链路千川：支持千川乘方/调控/全域推商品/推直播间 ROI、预算撞墙、灰保过保监控，内置30分钟趋势总结报告（支持豆包/智谱/DeepSeek/通义AI分析）与五大渠道三层持久化推送。",
   "permissions": [
     "storage",
     "notifications",
@@ -17,7 +17,13 @@
     "https://www.pushplus.plus/*",
     "https://oapi.dingtalk.com/*",
     "https://open.feishu.cn/*",
-    "https://api.day.app/*"
+    "https://api.day.app/*",
+    "https://ark.cn-beijing.volces.com/*",
+    "https://open.bigmodel.cn/*",
+    "https://api.deepseek.com/*",
+    "https://dashscope.aliyuncs.com/*",
+    "https://api.siliconflow.cn/*",
+    "https://api.openai.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -47,6 +53,19 @@
         "content.js"
       ],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/wechat-qr.jpg"
+      ],
+      "matches": [
+        "https://qianchuan.jinritemai.com/*",
+        "https://compass.jinritemai.com/*",
+        "https://ad.oceanengine.com/*",
+        "file://*/*"
+      ]
     }
   ]
 }

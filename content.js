@@ -10,7 +10,16 @@
   const CHANNELS_STORAGE_KEY = "qc_roi_monitor_channels_v1";
   const CHANNELS_BACKUP_KEY = "qc_roi_monitor_channels_backup_v1";
   const CHANNEL_STRING_FIELDS = ["wecomWebhook", "wecomMobiles", "pushplusToken", "customWebhook", "barkUrl"];
+  const AI_STRING_FIELDS = ["aiProvider", "aiApiKey", "aiModel", "aiEndpoint"];
   const CHANNEL_BOOL_FIELDS = ["desktopEnabled", "soundEnabled", "pushOnLow", "pushOnHigh", "pushOnCost", "pushOnExpired"];
+  const AI_PROVIDER_DEFAULTS = {
+    doubao: { endpoint: "https://ark.cn-beijing.volces.com/api/v3/chat/completions", model: "doubao-1-5-pro-32k-250115" },
+    zhipu: { endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions", model: "glm-4-flash" },
+    deepseek: { endpoint: "https://api.deepseek.com/chat/completions", model: "deepseek-chat" },
+    qwen: { endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", model: "qwen-plus" },
+    siliconflow: { endpoint: "https://api.siliconflow.cn/v1/chat/completions", model: "Qwen/Qwen2.5-7B-Instruct" },
+    custom: { endpoint: "", model: "" },
+  };
   const PREV_DEFAULT_ROI_KEYWORD = "整体支付ROI,直接支付ROI,支付ROI,ROI";
   const PREV_DEFAULT_NAME_KEYWORDS = ["计划", "计划,商品信息,商品,直播间", "计划,任务名称,商品信息,商品,直播间,任务"];
   const DEFAULT_CONFIG = {
@@ -31,6 +40,14 @@
     abnormalFilter: "all", // "all" | "low" | "high" | "cost" | "expired"
     compactMode: false,
     landscapeMode: false,
+    collapsedSections: {
+      sec_summary: false,
+      sec_target: false,
+      sec_rules: false,
+      sec_push: false,
+      sec_ai: true,
+      sec_logs: false,
+    },
     lowerLimit: "1.5",
     upperLimit: "4.0",
     costAlertEnabled: true,
@@ -55,6 +72,10 @@
     pushplusToken: "",
     customWebhook: "",
     barkUrl: "",
+    aiProvider: "doubao",
+    aiApiKey: "",
+    aiModel: "doubao-1-5-pro-32k-250115",
+    aiEndpoint: "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
     channelHistory: {
       wecomWebhook: [],
       wecomMobiles: [],
@@ -403,8 +424,11 @@
     lastScanMeta: null,
     activeAnomalies: [],
     lastSummaryAt: 0,
-    lastSummarySnapshot: null, // { ts, overallRoi, overallCost, activeCount }
+    lastSummarySnapshot: null, // { ts, displayRoi, effectiveCost, activeCount }
     latestEvalSnapshot: null,  // 最近一次 evaluateNow 的完整快照，供定时/手动投流总结使用
+    trendSamples: [],          // 近 35 分钟每分钟趋势采样（用于计算大盘斜率、单计划走势与撞墙倒计时）
+    latestSummaryText: "",
+    isGeneratingSummary: false,
   };
 
   // ---------- Shadow DOM UI ----------
@@ -449,14 +473,9 @@
       max-height: 88vh;
     }
     .panel.landscape .body {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
+      display: flex;
+      flex-direction: column;
       gap: 10px;
-      align-items: start;
-    }
-    .panel.landscape .status-card,
-    .panel.landscape .abnormal-box.show {
-      grid-column: 1 / -1;
     }
     .panel.landscape .abnormal-list {
       display: grid;
@@ -467,29 +486,87 @@
     .panel.landscape.compact .abnormal-list {
       max-height: 280px;
     }
-    .panel.landscape.compact .logs-section,
-    .panel.landscape .feedback-footer {
+    .sections-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .panel.landscape .sections-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      align-items: stretch;
+    }
+    .panel.landscape .sections-grid > .section:not(.collapsed) {
+      order: 1;
+    }
+    .panel.landscape .sections-grid > .section.span-full {
       grid-column: 1 / -1;
+    }
+    .panel.landscape .sections-grid > .section.collapsed {
+      order: 2;
+      align-self: start;
+      padding: 8px 11px;
     }
     .header {
       display: flex; align-items: center; justify-content: space-between; gap: 6px;
-      padding: 11px 13px; border-bottom: 1px solid #242b3d;
+      padding: 10px 12px; border-bottom: 1px solid #242b3d;
       background: #1a1f2e; border-radius: 14px 14px 0 0;
-      position: sticky; top: 0; z-index: 4;
+      position: sticky; top: 0; z-index: 6;
       cursor: move; user-select: none;
     }
-    .header-actions { display: flex; align-items: center; gap: 5px; }
-    .title { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .header-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+    .title { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .version-tag {
       font-size: 10px; font-weight: 600; color: #93c5fd;
       background: #1f2e4d; border: 1px solid #30497a;
-      border-radius: 999px; padding: 1px 6px;
+      border-radius: 999px; padding: 1px 6px; flex-shrink: 0;
     }
     .icon-btn {
       background: transparent; border: 1px solid #303952; color: #b8c2d8;
-      border-radius: 6px; padding: 3px 8px; cursor: pointer; font-size: 12px;
+      border-radius: 6px; padding: 3px 7px; cursor: pointer; font-size: 11px; white-space: nowrap;
     }
     .icon-btn:hover { background: #273046; color: #fff; }
+    .icon-btn.contact-btn {
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(59, 130, 246, 0.22));
+      border-color: rgba(251, 191, 36, 0.55);
+      color: #fde68a; font-weight: 700;
+    }
+    .icon-btn.contact-btn:hover {
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.36), rgba(59, 130, 246, 0.34));
+      border-color: #fbbf24; color: #fffbeb;
+      box-shadow: 0 0 10px rgba(251, 191, 36, 0.25);
+    }
+    .author-qr-wrap {
+      background: #ffffff; padding: 5px; border-radius: 9px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
+      flex-shrink: 0; text-align: center;
+    }
+    .author-qr-img {
+      display: block; width: 112px; height: 112px; object-fit: contain; border-radius: 5px;
+    }
+    .author-qr-tip {
+      margin-top: 3px; font-size: 10px; color: #475569; font-weight: 600;
+    }
+    .author-info {
+      flex: 1 1 200px; display: flex; flex-direction: column; gap: 7px; min-width: 0;
+    }
+    .author-wx-row {
+      display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+    }
+    .wechat-highlight-id {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 11px; border-radius: 8px; cursor: pointer;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 14px; font-weight: 800; letter-spacing: 0.4px;
+      color: #ffffff;
+      background: linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%);
+      border: 1px solid #7dd3fc;
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.38);
+      transition: transform 0.12s ease, filter 0.15s ease;
+      user-select: all;
+    }
+    .wechat-highlight-id:hover { filter: brightness(1.1); transform: translateY(-1px); }
     .body { padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 
     .status-card {
@@ -526,12 +603,12 @@
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
     label.field { display: flex; flex-direction: column; gap: 4px; color: #b7c2d9; font-size: 11px; }
-    input[type="text"], input[type="number"], input[type="password"] {
+    input[type="text"], input[type="number"], input[type="password"], select {
       width: 100%; background: #0f131c; color: #f8fafc;
       border: 1px solid #303a52; border-radius: 6px;
       padding: 6px 8px; font-size: 12px; outline: none;
     }
-    input:focus { border-color: #4f7cff; }
+    input:focus, select:focus { border-color: #4f7cff; }
     .check-row { display: flex; align-items: center; gap: 8px; color: #cbd5e1; cursor: pointer; }
     .check-row input { accent-color: #3b82f6; }
 
@@ -658,31 +735,84 @@
     .guide-box a:hover { text-decoration: underline; }
     .guide-box strong { color: #f8fafc; }
     .feedback-footer {
-      display: flex; align-items: center; justify-content: space-between; gap: 8px;
-      background: #141a29; border: 1px solid #263149; border-radius: 10px;
-      padding: 8px 11px; font-size: 11px; color: #cbd5e1;
+      display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+      background: linear-gradient(145deg, #172036 0%, #131927 100%);
+      border: 1px solid #2f4166; border-radius: 12px;
+      padding: 12px 14px; font-size: 11.5px; color: #cbd5e1;
+      transition: border-color 0.25s ease, box-shadow 0.25s ease;
     }
-    .feedback-footer strong { color: #93c5fd; font-weight: 700; }
+    .feedback-footer.feedback-flash {
+      border-color: #fbbf24;
+      box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.35), 0 8px 24px rgba(251, 191, 36, 0.18);
+    }
+    .feedback-title {
+      font-size: 12.5px; font-weight: 700; color: #f8fafc;
+    }
+    .feedback-custom-tag {
+      display: inline-block; width: fit-content;
+      color: #fde68a; background: rgba(234, 179, 8, 0.16);
+      border: 1px solid rgba(251, 191, 36, 0.45); border-radius: 999px;
+      padding: 3px 10px; font-size: 11.5px; font-weight: 700;
+    }
+    .collapsible-head {
+      cursor: pointer; user-select: none;
+    }
+    .collapsible-head:hover .sec-label { color: #bfdbfe; }
+    .sec-head-left {
+      display: flex; align-items: center; gap: 5px; min-width: 0; flex: 1;
+    }
+    .sec-chevron {
+      display: inline-block; width: 12px; font-size: 11px; color: #64748b;
+      transition: transform 0.15s ease; flex-shrink: 0;
+    }
+    .section.collapsed .sec-chevron { transform: rotate(-90deg); }
+    .section.collapsed .sec-body { display: none !important; }
+    .sec-body { display: flex; flex-direction: column; gap: 8px; }
+    .sec-mini-badge {
+      font-size: 10px; color: #94a3b8; font-weight: 500;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+    }
+    .summary-section {
+      background: linear-gradient(180deg, #171f33 0%, #151b2a 100%);
+      border: 1px solid #2e4066;
+    }
+    .engine-pill {
+      font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+      background: #1e3a5f; color: #93c5fd; border: 1px solid #3b82f6; flex-shrink: 0;
+    }
+    .engine-pill.ai {
+      background: #3b1d60; color: #e9d5ff; border-color: #a855f7;
+    }
+    .summary-report-body {
+      background: #0e131e; border: 1px solid #24304a; border-radius: 8px;
+      padding: 8px 10px; font-size: 11.5px; line-height: 1.55; color: #e2e8f0;
+      white-space: pre-wrap; max-height: 220px; overflow-y: auto;
+    }
+    .summary-meta-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 6px;
+      font-size: 10.5px; color: #94a3b8;
+    }
   `;
   shadow.appendChild(style);
 
   const root = document.createElement("div");
   root.innerHTML = `
-    <div class="pill" id="pillBtn" title="点击展开千川 ROI 监控面板">
+    <div class="pill" id="pillBtn" title="点击展开 Kamisama - 全链路千川 监控面板">
       <span class="dot" id="pillDot"></span>
-      <span id="pillText">ROI 监控: 未启动</span>
+      <span id="pillText">Kamisama: 未启动</span>
     </div>
 
     <div class="panel" id="panel">
       <div class="header" id="panelHeader" title="按住标题栏可拖动面板位置">
         <div class="title">
           <span class="dot" id="headerDot"></span>
-          <span>千川 ROI 实时监控</span>
-          <span class="version-tag">v1.2.2</span>
+          <span>Kamisama - 全链路千川</span>
+          <span class="version-tag">v1.3.0</span>
         </div>
         <div class="header-actions">
+          <button class="icon-btn contact-btn" id="contactAuthorBtn" type="button" title="跳转到底部查看作者微信与二维码">联系作者</button>
           <button class="icon-btn" id="landscapeModeBtn" title="切换横屏宽版 / 竖屏窄版布局">横屏</button>
-          <button class="icon-btn" id="compactModeBtn" title="折叠下方配置区，专注巡检异常计划">极简</button>
+          <button class="icon-btn" id="compactModeBtn" title="折叠下方配置区，专注巡检异常计划与总结报告">极简</button>
           <button class="icon-btn" id="collapseBtn">收起</button>
         </div>
       </div>
@@ -699,7 +829,7 @@
         <!-- 异常计划明细（默认严格按表格从上到下顺序排列，支持上一条/下一条与类型筛选） -->
         <div class="abnormal-box" id="abnormalBox">
           <div class="section-title">
-            <span id="abnormalBoxTitle">异常计划明细</span>
+            <span id="abnormalBoxTitle">异常/重点计划明细</span>
             <label class="check-row" style="font-size:11px;font-weight:500;">
               <input type="checkbox" id="highlightAbnormalRows">
               <span>表格高亮</span>
@@ -713,7 +843,7 @@
               <span class="mini-pill cost" data-filter="cost" id="filterCostPill">撞墙</span>
               <span class="mini-pill expired" data-filter="expired" id="filterExpiredPill">过保</span>
             </div>
-            <span class="mini-pill" id="sortOrderToggle" title="切换按表格从上到下顺序 / 按ROI极值排序">顺序：表格</span>
+            <span class="mini-pill" id="sortOrderToggle" title="切换按表格从上到下顺序 / 按极值排序">顺序：表格↑↓</span>
           </div>
           <div class="stepper-bar">
             <div class="stepper-btns">
@@ -725,248 +855,350 @@
           <div class="abnormal-list" id="abnormalList"></div>
         </div>
 
-        <!-- 监控模式 -->
-        <div class="section config-section">
-          <div class="section-title">
-            <span>1. 监控对象（实时读取）</span>
+        <!-- 面板内直显：30分钟投流总结报告（有AI Key走豆包/DeepSeek等深度诊断，无Key走内置趋势规则引擎） -->
+        <div class="section summary-section" data-sec="sec_summary" id="sec_summary">
+          <div class="section-title collapsible-head" data-sec-toggle="sec_summary">
+            <span class="sec-head-left">
+              <span class="sec-chevron">▾</span>
+              <span class="sec-label">📊 投流总结报告</span>
+              <span class="engine-pill" id="summaryEngineBadge">内置规则引擎</span>
+            </span>
+            <div style="display:flex;gap:4px;">
+              <button class="btn btn-ghost btn-sm" id="refreshSummaryPanelBtn" type="button" title="仅在面板内刷新总结，不发手机推送">刷新</button>
+              <button class="btn btn-primary btn-sm" id="sendSummaryCardBtn" type="button" title="生成最新总结并推送到手机渠道">汇报推送</button>
+              <button class="btn btn-ghost btn-sm" id="copySummaryBtn" type="button">复制</button>
+            </div>
+          </div>
+          <div class="sec-body">
+            <div class="summary-meta-row">
+              <span id="summaryReportMeta">尚未生成总结，点「刷新」或在启动监控后每 30 分钟自动生成</span>
+            </div>
+            <div class="summary-report-body" id="summaryReportContent">点击右上角「刷新」即可生成当前页面的大盘走势预判、好计划放量建议、坏计划止损/撞墙/灰保清单；若在下方「4. AI 投流大脑」填入豆包 / 智谱(免费) / DeepSeek Key，将自动切换为 AI 深度诊断。</div>
+          </div>
+        </div>
+
+        <!-- 1~5 可独立折叠模块容器（横屏下展开卡片自动配对/铺满，折叠卡片紧凑归拢，零留白） -->
+        <div class="sections-grid" id="sectionsGrid">
+        <!-- 1. 监控对象（可独立折叠） -->
+        <div class="section config-section" data-sec="sec_target" id="sec_target">
+          <div class="section-title collapsible-head" data-sec-toggle="sec_target">
+            <span class="sec-head-left">
+              <span class="sec-chevron">▾</span>
+              <span class="sec-label">1. 监控对象（实时读取）</span>
+            </span>
             <button class="btn btn-ghost btn-sm" id="copyDiagBtn" title="复制页面表格结构诊断JSON（不含Cookie/Token）">复制诊断</button>
           </div>
-          <div class="tabs">
-            <div class="tab active" data-mode="both" id="tabBoth">整体 + 多计划</div>
-            <div class="tab" data-mode="single" id="tabSingle">仅整体 ROI</div>
-            <div class="tab" data-mode="table" id="tabTable">仅计划列表</div>
-          </div>
-
-          <div id="singleModeBox" style="display:flex;flex-direction:column;gap:8px;">
-            <div class="row-between">
-              <button class="btn btn-primary btn-sm" id="pickElementBtn">点选页面整体 ROI</button>
-              <button class="btn btn-ghost btn-sm" id="autoFindRoiBtn">自动查找整体 ROI</button>
+          <div class="sec-body">
+            <div class="tabs">
+              <div class="tab active" data-mode="both" id="tabBoth">整体 + 多计划</div>
+              <div class="tab" data-mode="single" id="tabSingle">仅整体 ROI</div>
+              <div class="tab" data-mode="table" id="tabTable">仅计划列表</div>
             </div>
-            <div class="muted" id="selectorPreview">尚未绑定整体 ROI（可自动查找，或点左侧按钮直接点页面数字）</div>
-          </div>
 
-          <div id="tableModeBox" style="display:none;flex-direction:column;gap:8px;">
+            <div id="singleModeBox" style="display:flex;flex-direction:column;gap:8px;">
+              <div class="row-between">
+                <button class="btn btn-primary btn-sm" id="pickElementBtn">点选页面整体 ROI</button>
+                <button class="btn btn-ghost btn-sm" id="autoFindRoiBtn">自动查找整体 ROI</button>
+              </div>
+              <div class="muted" id="selectorPreview">尚未绑定整体 ROI（可自动查找，或点左侧按钮直接点页面数字）</div>
+            </div>
+
+            <div id="tableModeBox" style="display:none;flex-direction:column;gap:8px;">
+              <div class="grid-3">
+                <label class="field">ROI 列关键词
+                  <input type="text" id="roiHeaderKeyword" placeholder="ROI">
+                </label>
+                <label class="field">消耗列关键词
+                  <input type="text" id="costHeaderKeyword" placeholder="消耗">
+                </label>
+                <label class="field">名称列关键词
+                  <input type="text" id="nameHeaderKeyword" placeholder="计划">
+                </label>
+              </div>
+              <div class="grid-2">
+                <label class="field">最低消耗门槛(元)
+                  <input type="number" step="10" id="minCost" placeholder="100">
+                </label>
+                <label class="field">自动点刷新间隔(秒)
+                  <input type="number" min="15" step="5" id="refreshIntervalSec" placeholder="60">
+                </label>
+              </div>
+              <div class="row-between" style="flex-wrap:wrap;gap:6px;">
+                <label class="check-row">
+                  <input type="checkbox" id="onlyDelivering">
+                  <span>仅“投放中”</span>
+                </label>
+                <label class="check-row">
+                  <input type="checkbox" id="onlyRegulating">
+                  <span>仅“调控中”</span>
+                </label>
+                <label class="check-row">
+                  <input type="checkbox" id="autoClickRefresh">
+                  <span>定时点页内刷新</span>
+                </label>
+              </div>
+              <div class="muted" id="tableScanSummary">等待扫描页面表格...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. ROI 阈值 · 预算撞墙 · 过保与汇报（可独立折叠） -->
+        <div class="section config-section" data-sec="sec_rules" id="sec_rules">
+          <div class="section-title collapsible-head" data-sec-toggle="sec_rules">
+            <span class="sec-head-left">
+              <span class="sec-chevron">▾</span>
+              <span class="sec-label">2. ROI 阈值 · 预算撞墙 · 过保与汇报</span>
+            </span>
+          </div>
+          <div class="sec-body">
             <div class="grid-3">
-              <label class="field">ROI 列关键词
-                <input type="text" id="roiHeaderKeyword" placeholder="ROI">
+              <label class="field">ROI下限(跌破)
+                <input type="number" step="0.01" id="lowerLimit" placeholder="如 1.5">
               </label>
-              <label class="field">消耗列关键词
-                <input type="text" id="costHeaderKeyword" placeholder="消耗">
+              <label class="field">ROI上限(突破)
+                <input type="number" step="0.01" id="upperLimit" placeholder="如 4.0">
               </label>
-              <label class="field">名称列关键词
-                <input type="text" id="nameHeaderKeyword" placeholder="计划">
+              <label class="field">冷却(分钟)
+                <input type="number" min="0" step="1" id="cooldownMinutes" placeholder="10">
               </label>
             </div>
+            <div class="row-between" style="flex-wrap:wrap;gap:6px;margin-top:2px;">
+              <label class="check-row">
+                <input type="checkbox" id="costAlertEnabled">
+                <span>预算撞墙提醒（快赶上预算提醒加预算）</span>
+              </label>
+              <label class="check-row">
+                <input type="checkbox" id="markExpiredGuarantee">
+                <span>黄色标记过保计划（仅灰保）</span>
+              </label>
+            </div>
+            <div class="grid-3">
+              <label class="field">撞墙预警比例(%)
+                <input type="number" min="10" max="100" step="5" id="budgetWarnPercent" placeholder="80">
+              </label>
+              <label class="field">整体消耗上限(元)
+                <input type="number" min="0" step="100" id="overallCostLimit" placeholder="留空不限">
+              </label>
+              <label class="field">单计划上限(元)
+                <input type="number" min="0" step="50" id="singleCostLimit" placeholder="留空读预算">
+              </label>
+            </div>
+            <div class="muted" id="overallCostStatus">预算撞墙：自动监测表格预算（设整体上限可同步盯全店消耗）</div>
+            <div class="row-between" style="flex-wrap:wrap;gap:6px;margin-top:2px;">
+              <label class="check-row">
+                <input type="checkbox" id="summaryReportEnabled">
+                <span>定时投流总结报告</span>
+              </label>
+              <div style="display:flex;align-items:center;gap:5px;">
+                <input type="number" min="5" step="5" id="summaryIntervalMin" placeholder="30" style="width:58px;padding:4px 6px;" title="定时发送投流总结报告的间隔分钟数">
+                <span class="muted">分钟/次</span>
+                <button class="btn btn-ghost btn-sm" id="sendSummaryNowBtn" type="button">立即汇报</button>
+              </div>
+            </div>
+            <div class="muted" id="summaryNextHint">投流总结：启动监控后每 30 分钟自动推送一次</div>
             <div class="grid-2">
-              <label class="field">最低消耗门槛(元)
-                <input type="number" step="10" id="minCost" placeholder="100">
+              <label class="check-row">
+                <input type="checkbox" id="anomalyAlertEnabled">
+                <span>登录失效/报错/断流提醒</span>
               </label>
-              <label class="field">自动点刷新间隔(秒)
-                <input type="number" min="15" step="5" id="refreshIntervalSec" placeholder="60">
+              <label class="field">数据无更新断流(分钟,0关)
+                <input type="number" min="0" step="1" id="staleMinutes" placeholder="15">
               </label>
             </div>
-            <div class="row-between" style="flex-wrap:wrap;gap:6px;">
+            <div class="health-bar" id="healthStatusBox">页面健康：等待启动监控</div>
+            <div class="row-between">
               <label class="check-row">
-                <input type="checkbox" id="onlyDelivering">
-                <span>仅“投放中”</span>
+                <input type="checkbox" id="desktopEnabled">
+                <span>桌面弹窗通知</span>
               </label>
               <label class="check-row">
-                <input type="checkbox" id="onlyRegulating">
-                <span>仅“调控中”</span>
-              </label>
-              <label class="check-row">
-                <input type="checkbox" id="autoClickRefresh">
-                <span>定时点页内刷新</span>
+                <input type="checkbox" id="soundEnabled">
+                <span>告警提示音</span>
               </label>
             </div>
-            <div class="muted" id="tableScanSummary">等待扫描页面表格...</div>
           </div>
         </div>
 
-        <!-- 上下限阈值与页面异常提醒 -->
-        <div class="section config-section">
-          <div class="section-title"><span>2. ROI 阈值 · 预算撞墙 · 过保与汇报</span></div>
-          <div class="grid-3">
-            <label class="field">ROI下限(跌破)
-              <input type="number" step="0.01" id="lowerLimit" placeholder="如 1.5">
-            </label>
-            <label class="field">ROI上限(突破)
-              <input type="number" step="0.01" id="upperLimit" placeholder="如 4.0">
-            </label>
-            <label class="field">冷却(分钟)
-              <input type="number" min="0" step="1" id="cooldownMinutes" placeholder="10">
-            </label>
-          </div>
-          <div class="row-between" style="flex-wrap:wrap;gap:6px;margin-top:2px;">
-            <label class="check-row">
-              <input type="checkbox" id="costAlertEnabled">
-              <span>预算撞墙提醒（快赶上预算提醒加预算）</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" id="markExpiredGuarantee">
-              <span>黄色标记过保计划（防跑偏/跑飞）</span>
-            </label>
-          </div>
-          <div class="grid-3">
-            <label class="field">撞墙预警比例(%)
-              <input type="number" min="10" max="100" step="5" id="budgetWarnPercent" placeholder="80">
-            </label>
-            <label class="field">整体消耗上限(元)
-              <input type="number" min="0" step="100" id="overallCostLimit" placeholder="留空不限">
-            </label>
-            <label class="field">单计划上限(元)
-              <input type="number" min="0" step="50" id="singleCostLimit" placeholder="留空读预算">
-            </label>
-          </div>
-          <div class="muted" id="overallCostStatus">整体消耗撞线：自动监测表格预算（设整体上限可同步盯全店消耗）</div>
-          <div class="row-between" style="flex-wrap:wrap;gap:6px;margin-top:2px;">
-            <label class="check-row">
-              <input type="checkbox" id="summaryReportEnabled">
-              <span>定时投流总结报告</span>
-            </label>
-            <div style="display:flex;align-items:center;gap:5px;">
-              <input type="number" min="5" step="5" id="summaryIntervalMin" placeholder="30" style="width:58px;padding:4px 6px;" title="定时发送投流总结报告的间隔分钟数">
-              <span class="muted">分钟/次</span>
-              <button class="btn btn-ghost btn-sm" id="sendSummaryNowBtn" type="button">立即汇报</button>
-            </div>
-          </div>
-          <div class="muted" id="summaryNextHint">投流总结：启动监控后每 30 分钟自动推送一次</div>
-          <div class="grid-2">
-            <label class="check-row">
-              <input type="checkbox" id="anomalyAlertEnabled">
-              <span>登录失效/报错/断流提醒</span>
-            </label>
-            <label class="field">数据无更新断流(分钟,0关)
-              <input type="number" min="0" step="1" id="staleMinutes" placeholder="15">
-            </label>
-          </div>
-          <div class="health-bar" id="healthStatusBox">页面健康：等待启动监控</div>
-          <div class="row-between">
-            <label class="check-row">
-              <input type="checkbox" id="desktopEnabled">
-              <span>桌面弹窗通知</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" id="soundEnabled">
-              <span>告警提示音</span>
-            </label>
-          </div>
-        </div>
-
-        <!-- 手机微信推送 -->
-        <div class="section config-section">
-          <div class="section-title">
-            <span>3. 5大推送渠道（自动持久化记住）</span>
+        <!-- 3. 5大推送渠道（可独立折叠，配好即可收起） -->
+        <div class="section config-section" data-sec="sec_push" id="sec_push">
+          <div class="section-title collapsible-head" data-sec-toggle="sec_push">
+            <span class="sec-head-left">
+              <span class="sec-chevron">▾</span>
+              <span class="sec-label">3. 5大推送渠道（配好可点此折叠）</span>
+            </span>
             <div style="display:flex;gap:4px;">
               <button class="btn btn-ghost btn-sm" id="toggleAllGuideBtn" title="展开/收起全部5个渠道的配置连接步骤">教程?</button>
               <button class="btn btn-primary btn-sm" id="savePushBtn">保存</button>
               <button class="btn btn-ghost btn-sm" id="testPushBtn">测试</button>
             </div>
           </div>
-          <div class="save-status" id="pushSaveStatus">正在读取已保存的推送配置...</div>
-          <div class="guide-box" id="guide_desktop">
-            <strong>① 桌面弹窗 + 提示音配置：</strong><br>
-            1. 勾选上方第 2 区的 <strong>桌面弹窗通知</strong> 与 <strong>告警提示音</strong>。<br>
-            2. 若未弹窗，请确认系统通知中已允许 <strong>Google Chrome</strong> 发送通知（Windows 通知设置 / Mac 系统设置→通知）。<br>
-            3. 首次打开页面请先点击页面任意位置，以激活浏览器告警提示音。
+          <div class="sec-body">
+            <div class="save-status" id="pushSaveStatus">正在读取已保存的推送配置...</div>
+            <div class="guide-box" id="guide_desktop">
+              <strong>① 桌面弹窗 + 提示音配置：</strong><br>
+              1. 勾选上方第 2 区的 <strong>桌面弹窗通知</strong> 与 <strong>告警提示音</strong>。<br>
+              2. 若未弹窗，请确认系统通知中已允许 <strong>Google Chrome</strong> 发送通知（Windows 通知设置 / Mac 系统设置→通知）。<br>
+              3. 首次打开页面请先点击页面任意位置，以激活浏览器告警提示音。
+            </div>
+            <div class="row-between" style="flex-wrap:wrap;gap:6px;padding:2px 0;">
+              <label class="check-row">
+                <input type="checkbox" id="pushOnLow">
+                <span>跌破提醒</span>
+              </label>
+              <label class="check-row">
+                <input type="checkbox" id="pushOnHigh">
+                <span>突破提醒</span>
+              </label>
+              <label class="check-row">
+                <input type="checkbox" id="pushOnCost">
+                <span>撞墙提醒</span>
+              </label>
+              <label class="check-row">
+                <input type="checkbox" id="pushOnExpired">
+                <span>过保提醒</span>
+              </label>
+            </div>
+            <label class="field">
+              <span class="field-head">
+                <span>② 企业微信群机器人 Webhook（推荐：免费不限量）</span>
+                <span class="help-link" data-guide="guide_wecom">怎么获取?</span>
+              </span>
+              <input type="text" id="wecomWebhook" list="list_wecomWebhook" autocomplete="off" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...">
+              <div class="guide-box" id="guide_wecom">
+                1. 在企业微信建一个群（可仅自己 1 人）→ 群右上角 <strong>··· → 群机器人 → 添加机器人</strong>。<br>
+                2. 复制生成的 <strong>Webhook 地址</strong> 粘到上方，点「测试」。<br>
+                3. <strong>个人微信直收</strong>：手机微信关注企业微信「微信插件」并打开消息提醒即可。
+              </div>
+              <datalist id="list_wecomWebhook"></datalist>
+              <div class="history-chips" id="chips_wecomWebhook"></div>
+            </label>
+            <label class="field">企微 @手机号（可选，填 @all 则提醒所有人，多个用逗号隔开）
+              <input type="text" id="wecomMobiles" list="list_wecomMobiles" autocomplete="off" placeholder="如 13800138000 或 @all">
+              <datalist id="list_wecomMobiles"></datalist>
+              <div class="history-chips" id="chips_wecomMobiles"></div>
+            </label>
+            <label class="field">
+              <span class="field-head">
+                <span>③ PushPlus Token（直达个人微信，200条/天，需实名）</span>
+                <span class="help-link" data-guide="guide_pushplus">怎么获取?</span>
+              </span>
+              <div class="input-with-btn">
+                <input type="password" id="pushplusToken" list="list_pushplusToken" autocomplete="off" placeholder="粘贴 PushPlus token">
+                <button class="btn btn-ghost btn-sm" id="togglePushplusVisBtn" type="button" title="显示或隐藏 Token">显示</button>
+              </div>
+              <div class="guide-box" id="guide_pushplus">
+                1. 打开 <a href="https://www.pushplus.plus/" target="_blank" rel="noopener">pushplus.plus</a>，用微信扫码登录并关注服务号（按指引完成实名）。<br>
+                2. 进入「一对一消息 / 发送消息」页面，复制你的 <strong>token</strong> 粘贴到上方。<br>
+                3. 点击右上角「保存」与「测试」，个人微信服务号会立刻收到测试通知。
+              </div>
+              <datalist id="list_pushplusToken"></datalist>
+              <div class="history-chips" id="chips_pushplusToken"></div>
+            </label>
+            <label class="field">
+              <span class="field-head">
+                <span>④ 飞书 / 钉钉群机器人 Webhook（可选）</span>
+                <span class="help-link" data-guide="guide_custom">怎么获取?</span>
+              </span>
+              <input type="text" id="customWebhook" list="list_customWebhook" autocomplete="off" placeholder="https://open.feishu.cn/... 或 https://oapi.dingtalk.com/...">
+              <div class="guide-box" id="guide_custom">
+                <strong>飞书</strong>：群右上角 <strong>··· → 设置 → 群机器人 → 添加自定义机器人</strong>，复制 Webhook 粘贴。<br>
+                <strong>钉钉</strong>：群设置 → <strong>智能群助手 → 添加自定义机器人</strong> → 安全设置选<strong>自定义关键词</strong>，填入 <code>ROI</code>（或同时加 <code>预算</code>、<code>千川</code>），复制 Webhook 粘贴（暂不支持加签模式）。
+              </div>
+              <datalist id="list_customWebhook"></datalist>
+              <div class="history-chips" id="chips_customWebhook"></div>
+            </label>
+            <label class="field">
+              <span class="field-head">
+                <span>⑤ Bark 推送地址（仅 iPhone，免费不限量，可选）</span>
+                <span class="help-link" data-guide="guide_bark">怎么获取?</span>
+              </span>
+              <input type="text" id="barkUrl" list="list_barkUrl" autocomplete="off" placeholder="https://api.day.app/你的Key">
+              <div class="guide-box" id="guide_bark">
+                1. iPhone 在 App Store 搜索并安装免费软件 <strong>Bark</strong> 并开启通知权限。<br>
+                2. 直接点首页示例下方的<strong>「复制」</strong>按钮粘到上方即可（整段 <code>curl</code>、带 <code>/title/body</code> 的链接或纯 Key，插件都会自动提纯为 <code>https://api.day.app/你的Key</code>）。
+              </div>
+              <datalist id="list_barkUrl"></datalist>
+              <div class="history-chips" id="chips_barkUrl"></div>
+            </label>
           </div>
-          <div class="row-between" style="flex-wrap:wrap;gap:6px;padding:2px 0;">
-            <label class="check-row">
-              <input type="checkbox" id="pushOnLow">
-              <span>跌破推</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" id="pushOnHigh">
-              <span>突破推</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" id="pushOnCost">
-              <span>撞墙推</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" id="pushOnExpired">
-              <span>过保推</span>
-            </label>
-          </div>
-          <label class="field">
-            <span class="field-head">
-              <span>② 企业微信群机器人 Webhook（推荐：免费不限量）</span>
-              <span class="help-link" data-guide="guide_wecom">怎么获取?</span>
-            </span>
-            <input type="text" id="wecomWebhook" list="list_wecomWebhook" autocomplete="off" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...">
-            <div class="guide-box" id="guide_wecom">
-              1. 在企业微信建一个群（可仅自己 1 人）→ 群右上角 <strong>··· → 群机器人 → 添加机器人</strong>。<br>
-              2. 复制生成的 <strong>Webhook 地址</strong> 粘到上方，点「测试」。<br>
-              3. <strong>个人微信直收</strong>：手机微信关注企业微信「微信插件」并打开消息提醒即可。
-            </div>
-            <datalist id="list_wecomWebhook"></datalist>
-            <div class="history-chips" id="chips_wecomWebhook"></div>
-          </label>
-          <label class="field">企微 @手机号（可选，填 @all 则提醒所有人，多个用逗号隔开）
-            <input type="text" id="wecomMobiles" list="list_wecomMobiles" autocomplete="off" placeholder="如 13800138000 或 @all">
-            <datalist id="list_wecomMobiles"></datalist>
-            <div class="history-chips" id="chips_wecomMobiles"></div>
-          </label>
-          <label class="field">
-            <span class="field-head">
-              <span>③ PushPlus Token（直达个人微信，200条/天，需实名）</span>
-              <span class="help-link" data-guide="guide_pushplus">怎么获取?</span>
-            </span>
-            <div class="input-with-btn">
-              <input type="password" id="pushplusToken" list="list_pushplusToken" autocomplete="off" placeholder="粘贴 PushPlus token">
-              <button class="btn btn-ghost btn-sm" id="togglePushplusVisBtn" type="button" title="显示或隐藏 Token">显示</button>
-            </div>
-            <div class="guide-box" id="guide_pushplus">
-              1. 打开 <a href="https://www.pushplus.plus/" target="_blank" rel="noopener">pushplus.plus</a>，用微信扫码登录并关注服务号（按指引完成实名）。<br>
-              2. 进入「一对一消息 / 发送消息」页面，复制你的 <strong>token</strong> 粘贴到上方。<br>
-              3. 点击右上角「保存」与「测试」，个人微信服务号会立刻收到测试通知。
-            </div>
-            <datalist id="list_pushplusToken"></datalist>
-            <div class="history-chips" id="chips_pushplusToken"></div>
-          </label>
-          <label class="field">
-            <span class="field-head">
-              <span>④ 飞书 / 钉钉群机器人 Webhook（可选）</span>
-              <span class="help-link" data-guide="guide_custom">怎么获取?</span>
-            </span>
-            <input type="text" id="customWebhook" list="list_customWebhook" autocomplete="off" placeholder="https://open.feishu.cn/... 或 https://oapi.dingtalk.com/...">
-            <div class="guide-box" id="guide_custom">
-              <strong>飞书</strong>：群右上角 <strong>··· → 设置 → 群机器人 → 添加自定义机器人</strong>，复制 Webhook 粘贴。<br>
-              <strong>钉钉</strong>：群设置 → <strong>智能群助手 → 添加自定义机器人</strong> → 安全设置选<strong>自定义关键词</strong>，填入 <code>ROI</code>（或同时加 <code>预算</code>、<code>千川</code>），复制 Webhook 粘贴（暂不支持加签模式）。
-            </div>
-            <datalist id="list_customWebhook"></datalist>
-            <div class="history-chips" id="chips_customWebhook"></div>
-          </label>
-          <label class="field">
-            <span class="field-head">
-              <span>⑤ Bark 推送地址（仅 iPhone，免费不限量，可选）</span>
-              <span class="help-link" data-guide="guide_bark">怎么获取?</span>
-            </span>
-            <input type="text" id="barkUrl" list="list_barkUrl" autocomplete="off" placeholder="https://api.day.app/你的Key">
-            <div class="guide-box" id="guide_bark">
-              1. iPhone 在 App Store 搜索并安装免费软件 <strong>Bark</strong> 并开启通知权限。<br>
-              2. 直接点首页示例下方的<strong>「复制」</strong>按钮粘到上方即可（整段 <code>curl</code>、带 <code>/title/body</code> 的链接或纯 Key，插件都会自动提纯为 <code>https://api.day.app/你的Key</code>）。
-            </div>
-            <datalist id="list_barkUrl"></datalist>
-            <div class="history-chips" id="chips_barkUrl"></div>
-          </label>
         </div>
 
-        <!-- 日志 -->
-        <div class="section logs-section">
-          <div class="section-title">
-            <span>4. 实时告警记录</span>
+        <!-- 4. AI 投流大脑（可选：接入豆包/智谱免费/DeepSeek/通义，未填自动用内置规则引擎） -->
+        <div class="section config-section" data-sec="sec_ai" id="sec_ai">
+          <div class="section-title collapsible-head" data-sec-toggle="sec_ai">
+            <span class="sec-head-left">
+              <span class="sec-chevron">▾</span>
+              <span class="sec-label">4. AI 投流大脑（可选：豆包/智谱/DeepSeek）</span>
+            </span>
+            <span class="help-link" data-guide="guide_ai">怎么免费获取?</span>
+          </div>
+          <div class="sec-body">
+            <div class="muted">填写 API Key 后，30 分钟总结自动调用 AI 做趋势预判与调优建议；留空则自动使用内置千川趋势规则引擎。</div>
+            <div class="guide-box" id="guide_ai">
+              <strong>豆包（火山方舟，推荐）</strong>：打开 <a href="https://console.volcengine.com/ark" target="_blank" rel="noopener">火山方舟控制台</a> → 开通模型（新户送免费额度）→ 创建 API Key 粘贴到下方，模型填模型 ID 或推理接入点 <code>ep-xxxx</code>。<br>
+              <strong>智谱清言（永久免费模型）</strong>：打开 <a href="https://open.bigmodel.cn/" target="_blank" rel="noopener">open.bigmodel.cn</a> → 注册领 API Key，模型选 <code>glm-4-flash</code> 即可免费调用。<br>
+              <strong>DeepSeek / 通义 / 硅基流动</strong>：各自开放平台申请 API Key，选对应厂商即可自动填好接口地址。
+            </div>
+            <div class="grid-2">
+              <label class="field">大模型厂商
+                <select id="aiProvider">
+                  <option value="doubao">豆包（火山方舟）</option>
+                  <option value="zhipu">智谱清言（GLM-4-Flash 免费）</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="qwen">通义千问（百炼）</option>
+                  <option value="siliconflow">硅基流动（含免费模型）</option>
+                  <option value="custom">自定义 OpenAI 兼容接口</option>
+                </select>
+              </label>
+              <label class="field">模型 ID / 接入点
+                <input type="text" id="aiModel" autocomplete="off" placeholder="如 doubao-1-5-pro-32k-250115">
+              </label>
+            </div>
+            <label class="field">AI API Key（三层持久化记住，刷新不丢）
+              <div class="input-with-btn">
+                <input type="password" id="aiApiKey" autocomplete="off" placeholder="留空则使用内置千川趋势规则引擎">
+                <button class="btn btn-ghost btn-sm" id="toggleAiKeyVisBtn" type="button">显示</button>
+              </div>
+            </label>
+            <label class="field">接口地址（选厂商自动填充，自定义可修改）
+              <input type="text" id="aiEndpoint" autocomplete="off" placeholder="https://ark.cn-beijing.volces.com/api/v3/chat/completions">
+            </label>
+          </div>
+        </div>
+
+        <!-- 5. 实时告警记录（可独立折叠） -->
+        <div class="section logs-section" data-sec="sec_logs" id="sec_logs">
+          <div class="section-title collapsible-head" data-sec-toggle="sec_logs">
+            <span class="sec-head-left">
+              <span class="sec-chevron">▾</span>
+              <span class="sec-label">5. 实时告警记录</span>
+            </span>
             <button class="btn btn-ghost btn-sm" id="clearLogsBtn">清空</button>
           </div>
-          <div class="logs" id="logsContainer">
-            <div class="muted">暂无告警记录</div>
+          <div class="sec-body">
+            <div class="logs" id="logsContainer">
+              <div class="muted">暂无告警记录</div>
+            </div>
           </div>
         </div>
+        </div><!-- /sectionsGrid -->
 
-        <!-- 内测反馈 / 提建议 / 提需求 -->
-        <div class="feedback-footer">
-          <span>内测反馈 / 提建议 / 提需求 · 微信：<strong>OliverRockwell</strong></span>
-          <button class="btn btn-ghost btn-sm" id="copyWechatBtn" type="button">复制微信号</button>
+        <!-- 底部联系作者区（含微信二维码 + 醒目微信号） -->
+        <div class="feedback-footer" id="feedbackFooter">
+          <div class="author-qr-wrap">
+            <img class="author-qr-img" id="authorQrImg" alt="作者微信二维码">
+            <div class="author-qr-tip">微信扫一扫添加好友</div>
+          </div>
+          <div class="author-info">
+            <div class="feedback-title">💬 联系作者 · 内测反馈 / 提建议</div>
+            <div class="author-wx-row">
+              <span>作者微信：</span>
+              <span class="wechat-highlight-id" id="footerWechatId" title="点击复制微信号">OliverRockwell</span>
+              <button class="btn btn-primary btn-sm" id="copyWechatBtn" type="button">复制微信号</button>
+            </div>
+            <span class="feedback-custom-tag">有什么需求也可以找我聊</span>
+            <div class="muted">欢迎反馈使用问题、提新功能建议，或交流 AI 素材 / 插件软件定制</div>
+          </div>
         </div>
       </div>
       <div class="toast" id="toastBox"></div>
@@ -2707,7 +2939,7 @@
     return { state, pct };
   }
 
-  // ---------- 过保计划可选推送（默认仅表格黄色标记，勾选「过保推」后才发推送） ----------
+  // ---------- 过保计划可选提醒（默认仅表格黄色标记，勾选「过保提醒」后才发提醒） ----------
   function checkAndAlertExpired(targetKey, label, guaranteeState, extraLines = []) {
     if (!config.pushOnExpired) return;
     const cdKey = `expired:${targetKey}`;
@@ -2730,178 +2962,391 @@
     dispatchToBackground({ title, summary, detailLines, level: "warn" });
   }
 
-  // ---------- 定时 / 手动「投流总结报告」（自动识别商品卡 / 直播调控场景，默认每 30 分钟一次） ----------
-  function buildAndSendSummaryReport(isManual = false) {
-    const snap = healthState.latestEvalSnapshot;
+  // ---------- 趋势采样器（每分钟记录一次快照，支撑近30分钟趋势预判、单计划涨跌与预计撞墙倒计时） ----------
+  function recordTrendSample(displayRoi, effectiveCost, rows) {
     const now = Date.now();
-    const intervalMin = Math.max(5, Number(config.summaryIntervalMin || 30));
-
-    let overallRoi = snap?.overallRoi ?? null;
-    let overallRoiLabel = snap?.overallRoiLabel || "整体 ROI";
-    let overallCost = snap?.overallCost ?? null;
-    let overallCostLabel = snap?.overallCostLabel || "整体消耗";
-    let rows = snap?.filteredRows || null;
-    let abnormal = snap?.abnormalItems || [];
-    let scanMeta = snap?.scanMeta || healthState.lastScanMeta;
-
-    if (!rows) {
-      const autoRoi = autoFindRoiElement();
-      if (autoRoi) {
-        overallRoi = parseMetricNumber(autoRoi.value);
-        overallRoiLabel = autoRoi.label || "整体 ROI";
+    const list = healthState.trendSamples;
+    const last = list[list.length - 1];
+    if (last && now - last.ts < 55000) return;
+    const planMap = {};
+    for (const r of (rows || []).slice(0, 120)) {
+      if (r.id) {
+        planMap[r.id] = { roi: r.roi, cost: r.cost };
       }
-      const autoCost = autoFindOverallCostElement();
-      if (autoCost) {
-        overallCost = autoCost.value;
-        overallCostLabel = autoCost.label || "整体消耗";
+    }
+    list.push({ ts: now, displayRoi, effectiveCost, planMap });
+    const cutoff = now - 40 * 60 * 1000;
+    while (list.length > 0 && list[0].ts < cutoff) {
+      list.shift();
+    }
+    if (list.length > 45) list.splice(0, list.length - 45);
+  }
+
+  function renderSummaryCardInPanel({ engineType, engineLabel, metaText, bodyText }) {
+    const badge = $("summaryEngineBadge");
+    const metaEl = $("summaryReportMeta");
+    const bodyEl = $("summaryReportContent");
+    if (badge) {
+      badge.textContent = engineLabel || "内置规则引擎";
+      badge.className = `engine-pill${engineType === "ai" ? " ai" : ""}`;
+    }
+    if (metaEl && metaText) {
+      metaEl.textContent = metaText;
+    }
+    if (bodyEl && bodyText !== undefined) {
+      bodyEl.textContent = bodyText;
+      healthState.latestSummaryText = bodyText;
+    }
+  }
+
+  function syncAiEngineBadge() {
+    const badge = $("summaryEngineBadge");
+    if (!badge) return;
+    const hasKey = Boolean(String(config.aiApiKey || "").trim());
+    if (hasKey) {
+      const pName =
+        config.aiProvider === "doubao"
+          ? "豆包 AI"
+          : config.aiProvider === "zhipu"
+            ? "智谱 AI"
+            : config.aiProvider === "deepseek"
+              ? "DeepSeek AI"
+              : config.aiProvider === "qwen"
+                ? "通义 AI"
+                : config.aiProvider === "siliconflow"
+                  ? "硅基 AI"
+                  : "自定义 AI";
+      badge.textContent = pName;
+      badge.className = "engine-pill ai";
+    } else {
+      badge.textContent = "内置规则引擎";
+      badge.className = "engine-pill";
+    }
+  }
+
+  // ---------- 定时 / 手动「投流总结报告」（面板内直显 + 手机推送；有AI Key走豆包/DeepSeek等深度诊断，无Key走内置千川趋势规则） ----------
+  async function buildAndSendSummaryReport(options = {}) {
+    // 兼容旧调用方式 buildAndSendSummaryReport(true/false)
+    const opts = typeof options === "boolean" ? { isManual: options, shouldPush: true } : options;
+    const isManual = Boolean(opts.isManual);
+    const shouldPush = opts.shouldPush !== false;
+
+    if (healthState.isGeneratingSummary) return;
+    healthState.isGeneratingSummary = true;
+
+    try {
+      const snap = healthState.latestEvalSnapshot;
+      const now = Date.now();
+      const intervalMin = Math.max(5, Number(config.summaryIntervalMin || 30));
+
+      let overallRoi = snap?.overallRoi ?? null;
+      let overallRoiLabel = snap?.overallRoiLabel || "整体 ROI";
+      let overallCost = snap?.overallCost ?? null;
+      let overallCostLabel = snap?.overallCostLabel || "整体消耗";
+      let rows = snap?.filteredRows || null;
+      let abnormal = snap?.abnormalItems || [];
+      let scanMeta = snap?.scanMeta || healthState.lastScanMeta;
+
+      if (!rows) {
+        const autoRoi = autoFindRoiElement();
+        if (autoRoi) {
+          overallRoi = parseMetricNumber(autoRoi.value);
+          overallRoiLabel = autoRoi.label || "整体 ROI";
+        }
+        const autoCost = autoFindOverallCostElement();
+        if (autoCost) {
+          overallCost = autoCost.value;
+          overallCostLabel = autoCost.label || "整体消耗";
+        }
+        const scanned = scanCampaignTables();
+        scanMeta = scanned.meta;
+        const wantDel = Boolean(config.onlyDelivering);
+        const wantReg = Boolean(config.onlyRegulating);
+        rows = (scanned.rows || []).filter((r) => {
+          if (!wantDel && !wantReg) return true;
+          const st = String(r.status || "");
+          return (wantDel && /投放中/.test(st)) || (wantReg && /调控中/.test(st));
+        });
+        abnormal = allAbnormalItems || [];
       }
-      const scanned = scanCampaignTables();
-      scanMeta = scanned.meta;
-      const wantDel = Boolean(config.onlyDelivering);
-      const wantReg = Boolean(config.onlyRegulating);
-      rows = (scanned.rows || []).filter((r) => {
-        if (!wantDel && !wantReg) return true;
-        const st = String(r.status || "");
-        return (wantDel && /投放中/.test(st)) || (wantReg && /调控中/.test(st));
+
+      const isLiveControlScene =
+        location.pathname.includes("/overall-prom/detail") ||
+        /调控/.test(scanMeta?.roiHeader || "") ||
+        /调控/.test(scanMeta?.costHeader || "") ||
+        rows.some((r) => /调控中/.test(String(r.status || "")));
+      const sceneName = isLiveControlScene ? "直播调控" : "商品卡投流";
+      const unitWord = isLiveControlScene ? "条调控任务" : "条计划";
+
+      const lowItems = abnormal.filter((i) => i.direction === "low").sort((a, b) => a.roi - b.roi);
+      const highItems = abnormal.filter((i) => i.direction === "high").sort((a, b) => b.roi - a.roi);
+      const costItems = abnormal
+        .filter((i) => i.direction === "cost_warn" || i.direction === "cost_hit")
+        .sort((a, b) => (b.budgetPct || 0) - (a.budgetPct || 0));
+      const expiredItems = abnormal.filter((i) => i.direction === "expired");
+
+      const validRoiRows = rows.filter((r) => r.roi !== null);
+      const totalRowCost = rows.reduce((acc, r) => acc + (r.cost || 0), 0);
+      const budgetRows = rows.filter((r) => r.budget && r.budget > 0);
+      const totalRowBudget = budgetRows.reduce((acc, r) => acc + (r.budget || 0), 0);
+      const effectiveCost = isLiveControlScene
+        ? totalRowCost > 0 ? totalRowCost : overallCost
+        : overallCost !== null ? overallCost : totalRowCost > 0 ? totalRowCost : null;
+      const weightedRoi =
+        validRoiRows.length > 0
+          ? Math.round((validRoiRows.reduce((acc, r) => acc + r.roi, 0) / validRoiRows.length) * 100) / 100
+          : null;
+      const displayRoi = overallRoi !== null ? overallRoi : weightedRoi;
+      const displayRoiLabel = overallRoi !== null ? overallRoiLabel : isLiveControlScene ? "调控均ROI" : "列表均ROI";
+
+      // 寻找最早对比基准（优先 30 分钟内最早的趋势点或上一次总结快照）
+      const oldestSample = healthState.trendSamples[0] || null;
+      const prev = oldestSample || healthState.lastSummarySnapshot;
+      const elapsedMin = prev ? Math.max(1, Math.round((now - prev.ts) / 60000)) : 0;
+      const roiDiff = prev && displayRoi !== null && prev.displayRoi !== null ? displayRoi - prev.displayRoi : null;
+      const costDiff =
+        prev && effectiveCost !== null && prev.effectiveCost !== null ? effectiveCost - prev.effectiveCost : null;
+
+      // 判断大盘走势与后续预判
+      let trendWord = "数据刚采集中（持续运行约10分钟后给出精准走势）";
+      let forecastWord = "建议继续观察15~30分钟趋势变化";
+      if (roiDiff !== null && elapsedMin >= 2) {
+        if (roiDiff >= 0.15) {
+          trendWord = `📈 明显走高（近${elapsedMin}分 +${roiDiff.toFixed(2)}）`;
+          forecastWord = "大盘正处于放量上升通道，后续有望继续跑高，可顺势给高ROI优质计划补预算放量";
+        } else if (roiDiff <= -0.15) {
+          trendWord = `📉 明显走弱（近${elapsedMin}分 ${roiDiff.toFixed(2)}）`;
+          forecastWord = "大盘出现下滑惯性，如不及时压低或关停低ROI计划，接下来半小时大概率继续被拉低";
+        } else {
+          trendWord = `➡️ 窄幅平稳（近${elapsedMin}分 ${roiDiff >= 0 ? "+" : ""}${roiDiff.toFixed(2)}）`;
+          forecastWord = "整体走势平稳，保持当前出价节奏，重点防预算撞墙断流即可";
+        }
+      }
+
+      // 单计划走势辅助标注
+      const getPlanTrendTag = (planId, curRoi) => {
+        if (!oldestSample || !oldestSample.planMap || !oldestSample.planMap[planId] || curRoi === null) return "";
+        const oldRoi = oldestSample.planMap[planId].roi;
+        if (oldRoi === null || oldRoi === undefined) return "";
+        const d = curRoi - oldRoi;
+        if (Math.abs(d) < 0.08) return "";
+        return d > 0 ? ` 📈${oldRoi}→${curRoi}` : ` 📉${oldRoi}→${curRoi}`;
+      };
+
+      // 单计划预计撞墙时间估算
+      const getBudgetEtaTag = (item) => {
+        if (!oldestSample || !oldestSample.planMap || elapsedMin < 2) return "";
+        const baseId = String(item.id || "").replace(/:cost$/, "");
+        const oldCost = oldestSample.planMap[baseId]?.cost;
+        if (oldCost === null || oldCost === undefined || item.cost === null || !item.budget) return "";
+        const burn = item.cost - oldCost;
+        const remain = item.budget - item.cost;
+        if (burn > 1 && remain > 0) {
+          const etaMin = Math.max(1, Math.round((remain / burn) * elapsedMin));
+          return etaMin <= 180 ? ` · 按增速约${etaMin}分后撞墙` : "";
+        }
+        return "";
+      };
+
+      // 优质好计划（高ROI异常 或 排名前列且ROI高于下限+0.5的稳定计划）
+      const lowerNum = config.lowerLimit !== "" ? Number(config.lowerLimit) : 1.5;
+      const goodPlanPool =
+        highItems.length > 0
+          ? highItems.slice(0, 3)
+          : validRoiRows
+              .filter((r) => r.roi >= (Number.isFinite(lowerNum) ? lowerNum + 0.3 : 2.0) && (r.cost === null || r.cost >= Number(config.minCost || 0)))
+              .sort((a, b) => b.roi - a.roi)
+              .slice(0, 3);
+
+      const timeStr = new Date(now).toLocaleString("zh-CN", { hour12: false });
+      const hhmm = formatTime(new Date(now)).slice(0, 5);
+      const title = isManual
+        ? `📊 Kamisama ${sceneName}总结（${hhmm}）`
+        : `📊 Kamisama ${sceneName} ${intervalMin}分钟总结（${hhmm}）`;
+
+      // 生成高可读的内置千川趋势规则报告
+      const ruleLines = [];
+      const costBurnStr =
+        costDiff !== null && elapsedMin >= 2 ? `（近${elapsedMin}分新增 ${formatCostDisplay(Math.max(0, costDiff))}）` : "";
+      ruleLines.push(
+        `1. 【大盘走势与预判】`,
+        `   ${displayRoiLabel}：${displayRoi ?? "--"} · ${trendWord}`,
+        `   ${isLiveControlScene ? "调控总消耗" : overallCostLabel}：${formatCostDisplay(effectiveCost)}${costBurnStr} · 活跃 ${rows.length} ${unitWord}`
+      );
+      if (isLiveControlScene && totalRowBudget > 0) {
+        const pct = ((totalRowCost / totalRowBudget) * 100).toFixed(1);
+        ruleLines.push(`   调控总预算进度：已烧 ${pct}%（剩 ${formatCostDisplay(Math.max(0, totalRowBudget - totalRowCost))}）`);
+      }
+      ruleLines.push(`   预判：${forecastWord}`);
+
+      ruleLines.push(`\n2. 【优质好计划（放量/加预算候选）】`);
+      if (goodPlanPool.length > 0) {
+        goodPlanPool.forEach((p, idx) => {
+          const cleanId = String(p.id || "").replace(/:cost|:expired$/, "");
+          const trend = getPlanTrendTag(cleanId, p.roi);
+          ruleLines.push(
+            `   ${idx + 1}) 「${p.name.slice(0, 18)}」ROI ${p.roi}${trend}${p.cost !== null ? ` · 耗${formatCostDisplay(p.cost)}` : ""} → 建议保持或小幅加预算放量`
+          );
+        });
+      } else {
+        ruleLines.push(`   暂无显著高ROI放量计划，建议继续观察或补充新素材测款`);
+      }
+
+      ruleLines.push(`\n3. 【异常坏计划（止损 / 撞墙加预算 / 灰保防跑偏）】`);
+      let hasBad = false;
+      if (lowItems.length > 0) {
+        hasBad = true;
+        lowItems.slice(0, 3).forEach((p) => {
+          const trend = getPlanTrendTag(p.id, p.roi);
+          ruleLines.push(
+            `   🔴 跌破下限「${p.name.slice(0, 16)}」ROI ${p.roi}${trend}（下限${p.threshold}）→ 建议降出价或暂停止损`
+          );
+        });
+      }
+      if (costItems.length > 0) {
+        hasBad = true;
+        costItems.slice(0, 3).forEach((p) => {
+          const eta = getBudgetEtaTag(p);
+          ruleLines.push(
+            `   ⚡ 预算撞墙「${p.name.slice(0, 16)}」已烧${Math.round(p.budgetPct || 0)}%（¥${Math.round(p.cost || 0)}/¥${Math.round(p.budget || 0)}${eta}）→ 建议及时加预算`
+          );
+        });
+      }
+      if (expiredItems.length > 0) {
+        hasBad = true;
+        const expNames = expiredItems.slice(0, 3).map((p) => `「${p.name.slice(0, 14)}」`).join("、");
+        ruleLines.push(`   🟡 灰保已过保（${expiredItems.length}条）：${expNames} → 易跑偏跑飞，建议重点盯盘`);
+      }
+      if (!hasBad) {
+        ruleLines.push(`   当前无跌破、撞墙或灰保过保风险，计划运行健康`);
+      }
+
+      const actions = [];
+      if (lowItems.length > 0) actions.push(`优先处理 ${lowItems.length} 条跌破下限${isLiveControlScene ? "调控任务" : "计划"}止损`);
+      if (costItems.length > 0) actions.push(`给 ${costItems.length} 条快撞墙${isLiveControlScene ? "调控任务" : "计划"}补预算防断流`);
+      if (expiredItems.length > 0) actions.push(`复核 ${expiredItems.length} 条灰保已过保计划防止跑偏`);
+      if (goodPlanPool.length > 0) actions.push(`对 Top ${goodPlanPool.length} 优质计划适当加预算放量`);
+      ruleLines.push(`\n4. 【下个${intervalMin}分钟重点动作】`, `   ${actions.length > 0 ? actions.join("；") : "保持当前出价与预算节奏，继续盯盘"}`);
+
+      const ruleReportText = ruleLines.join("\n");
+      let finalReportText = ruleReportText;
+      let usedEngineType = "rule";
+      let usedEngineLabel = "内置规则引擎";
+
+      // 若配置了 AI API Key，优先调用国内大模型生成趋势预判与深度投流建议（失败则无缝兜底内置规则报告）
+      const hasAiKey = Boolean(String(config.aiApiKey || "").trim());
+      if (hasAiKey && isExtensionAlive()) {
+        renderSummaryCardInPanel({
+          engineType: "ai",
+          engineLabel: "AI 分析中...",
+          metaText: `${timeStr} · 正在调用 AI 生成${sceneName}深度诊断...`,
+          bodyText: "⏳ 正在将当前大盘、近30分钟走势与优劣计划发送给 AI 大模型分析，请稍候...",
+        });
+
+        const metricsData = {
+          scene: sceneName,
+          time: timeStr,
+          thresholds: { roiLower: config.lowerLimit, roiUpper: config.upperLimit, budgetWarnPct: config.budgetWarnPercent },
+          overall: {
+            roiLabel: displayRoiLabel,
+            roi: displayRoi,
+            roiDelta: roiDiff !== null ? Number(roiDiff.toFixed(2)) : null,
+            elapsedMinutes: elapsedMin,
+            cost: effectiveCost,
+            costDelta: costDiff !== null ? Number(costDiff.toFixed(2)) : null,
+            totalBudget: totalRowBudget > 0 ? totalRowBudget : null,
+            activeCount: rows.length,
+          },
+          goodPlans: goodPlanPool.map((p) => ({
+            name: p.name.slice(0, 22),
+            roi: p.roi,
+            cost: p.cost,
+            trend: getPlanTrendTag(String(p.id || "").replace(/:cost|:expired$/, ""), p.roi).trim(),
+          })),
+          badLowRoiPlans: lowItems.slice(0, 5).map((p) => ({
+            name: p.name.slice(0, 22),
+            roi: p.roi,
+            cost: p.cost,
+            trend: getPlanTrendTag(p.id, p.roi).trim(),
+          })),
+          budgetWallPlans: costItems.slice(0, 5).map((p) => ({
+            name: p.name.slice(0, 22),
+            cost: p.cost,
+            budget: p.budget,
+            pct: Math.round(p.budgetPct || 0),
+            eta: getBudgetEtaTag(p).trim(),
+          })),
+          grayExpiredPlans: expiredItems.slice(0, 5).map((p) => ({
+            name: p.name.slice(0, 22),
+            roi: p.roi,
+            cost: p.cost,
+          })),
+        };
+
+        const aiResp = await new Promise((resolve) => {
+          try {
+            chrome.runtime.sendMessage(
+              {
+                type: "GENERATE_AI_SUMMARY",
+                payload: {
+                  aiConfig: {
+                    provider: config.aiProvider || "doubao",
+                    apiKey: config.aiApiKey,
+                    model: config.aiModel,
+                    endpoint: config.aiEndpoint,
+                  },
+                  metricsData,
+                },
+              },
+              (r) => resolve(r || { ok: false, error: chrome.runtime.lastError?.message || "无响应" })
+            );
+          } catch (e) {
+            resolve({ ok: false, error: String(e) });
+          }
+        });
+
+        if (aiResp && aiResp.ok && aiResp.text) {
+          finalReportText = aiResp.text;
+          usedEngineType = "ai";
+          usedEngineLabel = `AI · ${aiResp.providerName || "大模型"}`;
+        } else {
+          usedEngineType = "rule";
+          usedEngineLabel = "规则兜底(AI未通)";
+          finalReportText = `[AI 调用失败已自动切内置规则：${aiResp?.error || "请检查Key/模型ID"}]\n\n${ruleReportText}`;
+        }
+      }
+
+      // 更新面板内直显总结卡片
+      renderSummaryCardInPanel({
+        engineType: usedEngineType,
+        engineLabel: usedEngineLabel,
+        metaText: `${timeStr} · ${sceneName} · 活跃${rows.length}条（跌破${lowItems.length}/撞墙${costItems.length}/灰保${expiredItems.length}/高ROI${highItems.length}）`,
+        bodyText: finalReportText,
       });
-      abnormal = allAbnormalItems || [];
-    }
 
-    // 自动识别当前为「直播调控」还是「商品卡 / 乘方投流」场景
-    const isLiveControlScene =
-      location.pathname.includes("/overall-prom/detail") ||
-      /调控/.test(scanMeta?.roiHeader || "") ||
-      /调控/.test(scanMeta?.costHeader || "") ||
-      rows.some((r) => /调控中/.test(String(r.status || "")));
-    const sceneName = isLiveControlScene ? "直播调控" : "商品卡投流";
-    const unitWord = isLiveControlScene ? "条调控任务" : "条计划";
+      // 更新周期快照与下次汇报时间
+      if (shouldPush) {
+        healthState.lastSummaryAt = now;
+        healthState.lastSummarySnapshot = { ts: now, displayRoi, effectiveCost, activeCount: rows.length };
+        updateSummaryNextHint();
 
-    const lowItems = abnormal.filter((i) => i.direction === "low").sort((a, b) => a.roi - b.roi);
-    const highItems = abnormal.filter((i) => i.direction === "high").sort((a, b) => b.roi - a.roi);
-    const costItems = abnormal
-      .filter((i) => i.direction === "cost_warn" || i.direction === "cost_hit")
-      .sort((a, b) => (b.budgetPct || 0) - (a.budgetPct || 0));
-    const expiredItems = abnormal.filter((i) => i.direction === "expired");
-
-    const validRoiRows = rows.filter((r) => r.roi !== null);
-    const totalRowCost = rows.reduce((acc, r) => acc + (r.cost || 0), 0);
-    const budgetRows = rows.filter((r) => r.budget && r.budget > 0);
-    const totalRowBudget = budgetRows.reduce((acc, r) => acc + (r.budget || 0), 0);
-    const effectiveCost = isLiveControlScene
-      ? totalRowCost > 0 ? totalRowCost : overallCost
-      : overallCost !== null ? overallCost : totalRowCost > 0 ? totalRowCost : null;
-    const weightedRoi =
-      validRoiRows.length > 0
-        ? Math.round((validRoiRows.reduce((acc, r) => acc + r.roi, 0) / validRoiRows.length) * 100) / 100
-        : null;
-    const displayRoi = overallRoi !== null ? overallRoi : weightedRoi;
-    const displayRoiLabel = overallRoi !== null ? overallRoiLabel : isLiveControlScene ? "调控均ROI" : "列表均ROI";
-
-    // 计算相对上一次总结的半小时增量变化
-    const prev = healthState.lastSummarySnapshot;
-    let roiDeltaStr = "";
-    let costDeltaStr = "";
-    if (prev) {
-      const elapsedMin = Math.max(1, Math.round((now - prev.ts) / 60000));
-      if (displayRoi !== null && prev.displayRoi !== null) {
-        const diff = displayRoi - prev.displayRoi;
-        roiDeltaStr = `（近${elapsedMin}分 ${diff >= 0 ? "+" : ""}${diff.toFixed(2)}）`;
+        const compactSummary = `${displayRoiLabel} ${displayRoi ?? "--"} | ${isLiveControlScene ? "调控耗" : "耗"} ${formatCostDisplay(effectiveCost)} | 跌破${lowItems.length}·撞墙${costItems.length}·灰保${expiredItems.length}·高ROI${highItems.length}`;
+        const pushLines = finalReportText
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .slice(0, 14);
+        pushLog("ok", `${title}（${usedEngineLabel}）`);
+        dispatchToBackground(
+          { title, summary: compactSummary, detailLines: pushLines, level: lowItems.length > 0 ? "warn" : "high" },
+          isManual
+        );
+      } else if (isManual) {
+        showToast(`总结报告已在面板刷新（${usedEngineLabel}）`, 2400);
       }
-      if (effectiveCost !== null && prev.effectiveCost !== null) {
-        const cDiff = effectiveCost - prev.effectiveCost;
-        costDeltaStr = `（近${elapsedMin}分 ${cDiff >= 0 ? "+" : ""}${formatCostDisplay(Math.abs(cDiff))}）`;
-      }
+    } finally {
+      healthState.isGeneratingSummary = false;
     }
-
-    const timeStr = new Date(now).toLocaleString("zh-CN", { hour12: false });
-    const hhmm = formatTime(new Date(now)).slice(0, 5);
-    const title = isManual
-      ? `📊 ${sceneName}即时总结报告（${hhmm}）`
-      : `📊 ${sceneName} ${intervalMin} 分钟总结报告（${hhmm}）`;
-
-    const summaryParts = [];
-    if (displayRoi !== null) summaryParts.push(`${displayRoiLabel} ${displayRoi}${roiDeltaStr}`);
-    if (effectiveCost !== null) {
-      const costPrefix = isLiveControlScene ? "调控总消耗" : overallCostLabel;
-      summaryParts.push(`${costPrefix} ${formatCostDisplay(effectiveCost)}${costDeltaStr}`);
-    }
-    summaryParts.push(`${isLiveControlScene ? "调控中" : "在投"} ${rows.length} ${unitWord}`);
-    summaryParts.push(`跌破${lowItems.length} · 撞墙${costItems.length} · 灰保过保${expiredItems.length} · 高ROI${highItems.length}`);
-    const summary = summaryParts.join(" | ");
-
-    const detailLines = [`统计时间：${timeStr} · 场景：${sceneName}`];
-    if (isLiveControlScene && totalRowBudget > 0) {
-      const budgetUsedPct = ((totalRowCost / totalRowBudget) * 100).toFixed(1);
-      detailLines.push(
-        `调控预算进度：已消耗 ${formatCostDisplay(totalRowCost)} / 总预算 ${formatCostDisplay(totalRowBudget)}（已用 ${budgetUsedPct}%，剩余 ${formatCostDisplay(Math.max(0, totalRowBudget - totalRowCost))}）`
-      );
-    }
-    if (validRoiRows.length > 0) {
-      const rois = validRoiRows.map((r) => r.roi);
-      detailLines.push(
-        `${isLiveControlScene ? "调控任务" : "计划"}概览：活跃 ${rows.length} 条，ROI 区间 ${Math.min(...rois)} ~ ${Math.max(...rois)}（设定阈值 [${config.lowerLimit || "-∞"}, ${config.upperLimit || "+∞"}]）`
-      );
-    }
-
-    if (lowItems.length > 0) {
-      const topLow = lowItems
-        .slice(0, 3)
-        .map((i) => `「${i.name.slice(0, 14)}」ROI ${i.roi}${i.cost !== null ? `/耗¥${Math.round(i.cost)}` : ""}`)
-        .join("；");
-      detailLines.push(`🔴 跌破下限（${lowItems.length}条）：${topLow}`);
-    }
-    if (costItems.length > 0) {
-      const topCost = costItems
-        .slice(0, 3)
-        .map((i) => `「${i.name.slice(0, 14)}」${Math.round(i.budgetPct || 0)}%(¥${Math.round(i.cost || 0)}/¥${Math.round(i.budget || 0)})`)
-        .join("；");
-      detailLines.push(`⚡ 预算快撞墙（${costItems.length}条）：${topCost}`);
-    }
-    if (expiredItems.length > 0) {
-      const topExp = expiredItems
-        .slice(0, 3)
-        .map((i) => `「${i.name.slice(0, 14)}」${i.roi !== null ? `ROI ${i.roi}` : ""}`)
-        .join("；");
-      detailLines.push(`🟡 灰保已过保（${expiredItems.length}条）：${topExp}`);
-    }
-    if (highItems.length > 0) {
-      const topHigh = highItems
-        .slice(0, 3)
-        .map((i) => `「${i.name.slice(0, 14)}」ROI ${i.roi}${i.cost !== null ? `/耗¥${Math.round(i.cost)}` : ""}`)
-        .join("；");
-      detailLines.push(`🔥 优质高ROI（${highItems.length}条）：${topHigh}`);
-    }
-
-    const tips = [];
-    if (lowItems.length > 0) {
-      tips.push(
-        isLiveControlScene
-          ? `优先处理 ${lowItems.length} 条跌破下限的调控任务（及时降出价或暂停止损）`
-          : `优先处理 ${lowItems.length} 条跌破下限计划止损/调出价`
-      );
-    }
-    if (costItems.length > 0) {
-      tips.push(
-        isLiveControlScene
-          ? `有 ${costItems.length} 条调控任务快撞预算墙，请及时加调控预算防断流`
-          : `有 ${costItems.length} 条计划快撞预算墙，请及时补预算防断流`
-      );
-    }
-    if (expiredItems.length > 0) {
-      tips.push(`盯紧 ${expiredItems.length} 条灰保已过保${isLiveControlScene ? "调控任务" : "计划"}防跑偏跑飞`);
-    }
-    if (highItems.length > 0) {
-      tips.push(`可对 ${highItems.length} 条高ROI优质${isLiveControlScene ? "调控任务适当加预算追投" : "计划适当放量"}`);
-    }
-    detailLines.push(`💡 投流建议：${tips.length > 0 ? tips.join("；") : `当前${sceneName}整体平稳，继续保持观察`}`);
-    detailLines.push(`页面：${document.title || location.pathname}`);
-
-    healthState.lastSummaryAt = now;
-    healthState.lastSummarySnapshot = { ts: now, displayRoi, effectiveCost, activeCount: rows.length };
-    updateSummaryNextHint();
-
-    pushLog("ok", `${title} → ${summary}`);
-    dispatchToBackground({ title, summary, detailLines, level: lowItems.length > 0 ? "warn" : "high" }, isManual);
   }
 
   function updateSummaryNextHint() {
@@ -3263,17 +3708,21 @@
     const hasValidDataForSummary = singleValid || tableValid;
     if (hasValidDataForSummary) {
       const nowSum = Date.now();
+      const totalRowCostCur = latestFilteredRows.reduce((acc, r) => acc + (r.cost || 0), 0);
+      const validRoiCur = latestFilteredRows.filter((r) => r.roi !== null);
+      const avgRoiCur =
+        validRoiCur.length > 0
+          ? Math.round((validRoiCur.reduce((a, r) => a + r.roi, 0) / validRoiCur.length) * 100) / 100
+          : null;
+      const curDisplayRoi = singleNumericVal !== null ? singleNumericVal : avgRoiCur;
+      const curEffCost = foundOverallCost ? foundOverallCost.value : totalRowCostCur > 0 ? totalRowCostCur : null;
+      recordTrendSample(curDisplayRoi, curEffCost, latestFilteredRows);
+
       if (!healthState.lastSummarySnapshot) {
-        const totalRowCostInit = latestFilteredRows.reduce((acc, r) => acc + (r.cost || 0), 0);
-        const validRoiInit = latestFilteredRows.filter((r) => r.roi !== null);
-        const avgRoiInit =
-          validRoiInit.length > 0
-            ? Math.round((validRoiInit.reduce((a, r) => a + r.roi, 0) / validRoiInit.length) * 100) / 100
-            : null;
         healthState.lastSummarySnapshot = {
           ts: nowSum,
-          displayRoi: singleNumericVal !== null ? singleNumericVal : avgRoiInit,
-          effectiveCost: foundOverallCost ? foundOverallCost.value : totalRowCostInit > 0 ? totalRowCostInit : null,
+          displayRoi: curDisplayRoi,
+          effectiveCost: curEffCost,
           activeCount: latestFilteredRows.length,
         };
       }
@@ -3281,7 +3730,7 @@
         const intervalMs = Math.max(5, Number(config.summaryIntervalMin || 30)) * 60 * 1000;
         const baseTs = healthState.lastSummaryAt || healthState.monitorStartedAt || nowSum;
         if (nowSum - baseTs >= intervalMs) {
-          buildAndSendSummaryReport(false);
+          buildAndSendSummaryReport({ isManual: false, shouldPush: true });
         }
       }
     }
@@ -3380,7 +3829,7 @@
     const scanRes = scanCampaignTables();
     const autoRoi = autoFindRoiElement();
     return {
-      version: "1.2.2",
+      version: "1.3.0",
       urlPath: location.origin + location.pathname,
       autoOverallRoi: autoRoi ? { label: autoRoi.label, value: autoRoi.value, selector: autoRoi.selector } : null,
       roiCardHints,
@@ -3572,7 +4021,7 @@
     pillDot.className = `dot ${status}`;
     headerDot.className = `dot ${status}`;
 
-    const prefix = config.enabled ? "ROI" : "ROI 监控";
+    const prefix = config.enabled ? "Kamisama" : "Kamisama 监控";
     const statusLabel =
       status === "error"
         ? "页面异常"
@@ -3585,7 +4034,7 @@
               : "";
     $("pillText").textContent = config.enabled
       ? `${prefix}: ${valueText}${statusLabel ? ` (${statusLabel})` : ""}`
-      : "ROI 监控: 未启动";
+      : "Kamisama: 未启动";
   }
 
   function syncMonitorButton() {
@@ -3792,10 +4241,39 @@
     focusAbnormalItem(nextIdx, true);
   }
 
+  function syncCollapsedSections() {
+    const map = config.collapsedSections && typeof config.collapsedSections === "object" ? config.collapsedSections : {};
+    const isCompact = Boolean(config.compactMode);
+    shadow.querySelectorAll(".section[data-sec]").forEach((sec) => {
+      const id = sec.getAttribute("data-sec");
+      sec.classList.toggle("collapsed", Boolean(map[id]));
+      sec.classList.remove("span-full");
+    });
+
+    // 横屏零留白自适应：计算 sectionsGrid 中可见的展开卡片与折叠卡片数量，奇数个展开卡时让最后一张（或唯一一张）铺满整行
+    const grid = $("sectionsGrid");
+    if (grid) {
+      const gridSecs = Array.from(grid.children).filter((el) => {
+        if (!el.matches?.(".section[data-sec]")) return false;
+        if (isCompact && el.classList.contains("config-section")) return false;
+        return true;
+      });
+      const expanded = gridSecs.filter((el) => !el.classList.contains("collapsed"));
+      const collapsed = gridSecs.filter((el) => el.classList.contains("collapsed"));
+      if (expanded.length % 2 === 1) {
+        expanded[expanded.length - 1].classList.add("span-full");
+      }
+      if (collapsed.length % 2 === 1) {
+        collapsed[collapsed.length - 1].classList.add("span-full");
+      }
+    }
+  }
+
   function syncCompactMode() {
     const compact = Boolean(config.compactMode);
     $("panel").classList.toggle("compact", compact);
     $("compactModeBtn").textContent = compact ? "配置" : "极简";
+    syncCollapsedSections();
   }
 
   function clampHostIntoViewport() {
@@ -3965,6 +4443,10 @@
       pushplusToken: String(config.pushplusToken || "").trim(),
       customWebhook: String(config.customWebhook || "").trim(),
       barkUrl: String(config.barkUrl || "").trim(),
+      aiProvider: String(config.aiProvider || "doubao"),
+      aiApiKey: String(config.aiApiKey || "").trim(),
+      aiModel: String(config.aiModel || "").trim(),
+      aiEndpoint: String(config.aiEndpoint || "").trim(),
       desktopEnabled: Boolean(config.desktopEnabled),
       soundEnabled: Boolean(config.soundEnabled),
       pushOnLow: config.pushOnLow !== false,
@@ -4048,7 +4530,7 @@
     if (onHigh) dirParts.push("突破");
     if (onCost) dirParts.push("撞墙");
     if (onExpired) dirParts.push("过保");
-    const dirText = dirParts.length > 0 ? `${dirParts.join("+")}推` : "仅页内标亮不推送";
+    const dirText = dirParts.length > 0 ? `${dirParts.join("+")}提醒` : "仅页内标亮不提醒";
     if (configured.length === 0) {
       el.textContent = `暂未启用推送渠道（策略：${dirText}，填写后自动记住）`;
       el.className = "save-status warn";
@@ -4098,9 +4580,9 @@
 
   function saveConfig() {
     if (!isConfigHydrated || !isExtensionAlive()) return;
-    // 仅持久化监控与 UI 配置，不覆盖独立的 CHANNELS_STORAGE_KEY，杜绝多标签页互相冲掉推送 Token
+    // 仅持久化监控与 UI 配置，不覆盖独立的 CHANNELS_STORAGE_KEY，杜绝多标签页互相冲掉推送 Token 与 AI Key
     const nonChannelConfig = { ...config };
-    for (const f of [...CHANNEL_STRING_FIELDS, ...CHANNEL_BOOL_FIELDS, "pushDirection", "channelHistory"]) {
+    for (const f of [...CHANNEL_STRING_FIELDS, ...AI_STRING_FIELDS, ...CHANNEL_BOOL_FIELDS, "pushDirection", "channelHistory"]) {
       delete nonChannelConfig[f];
     }
     try {
@@ -4110,14 +4592,28 @@
     }
   }
 
+  function syncAiProviderPlaceholders() {
+    const p = config.aiProvider || "doubao";
+    const preset = AI_PROVIDER_DEFAULTS[p] || AI_PROVIDER_DEFAULTS.custom;
+    const epEl = $("aiEndpoint");
+    const mdEl = $("aiModel");
+    if (epEl) {
+      epEl.placeholder = preset.endpoint || "https://你的兼容接口地址/v1/chat/completions";
+    }
+    if (mdEl) {
+      mdEl.placeholder = preset.model ? `如 ${preset.model}` : "填写模型名称";
+    }
+  }
+
   function applyChannelsToInputs(skipFocused = false) {
     const activeEl = shadow.activeElement;
-    for (const field of CHANNEL_STRING_FIELDS) {
+    for (const field of [...CHANNEL_STRING_FIELDS, ...AI_STRING_FIELDS]) {
       const input = $(field);
       if (!input) continue;
       if (skipFocused && activeEl === input) continue;
       input.value = config[field] || "";
     }
+    syncAiProviderPlaceholders();
     $("desktopEnabled").checked = Boolean(config.desktopEnabled);
     $("soundEnabled").checked = Boolean(config.soundEnabled);
     $("pushOnLow").checked = config.pushOnLow !== false;
@@ -4126,6 +4622,7 @@
     $("pushOnExpired").checked = Boolean(config.pushOnExpired);
     renderChannelHistoryUI();
     updatePushSaveStatus();
+    syncAiEngineBadge();
   }
 
   function applyConfigToInputs() {
@@ -4154,6 +4651,7 @@
     renderSelectorPreview();
     syncCompactMode();
     syncLandscapeMode();
+    syncCollapsedSections();
     switchMode(config.mode, false);
     updateSummaryNextHint();
     syncMonitorButton();
@@ -4164,6 +4662,21 @@
     window.addEventListener("resize", clampHostIntoViewport);
     $("pillBtn").addEventListener("click", () => setPanelOpen(true));
     $("collapseBtn").addEventListener("click", () => setPanelOpen(false));
+
+    // 所有大区块均支持独立点击标题栏折叠 / 展开（自动持久化记忆）
+    shadow.querySelectorAll(".collapsible-head[data-sec-toggle]").forEach((head) => {
+      head.addEventListener("click", (e) => {
+        if (e.target.closest?.("button, input, select, a, .help-link")) return;
+        const secId = head.getAttribute("data-sec-toggle");
+        if (!secId) return;
+        if (!config.collapsedSections || typeof config.collapsedSections !== "object") {
+          config.collapsedSections = { ...DEFAULT_CONFIG.collapsedSections };
+        }
+        config.collapsedSections[secId] = !config.collapsedSections[secId];
+        syncCollapsedSections();
+        saveConfig();
+      });
+    });
     $("landscapeModeBtn").addEventListener("click", () => {
       config.landscapeMode = !config.landscapeMode;
       saveConfig();
@@ -4302,18 +4815,103 @@
       $("logsContainer").innerHTML = '<div class="muted">暂无告警记录（冷却记录已重置）</div>';
     });
 
-    $("copyWechatBtn").addEventListener("click", async () => {
+    const authorQrImg = $("authorQrImg");
+    if (authorQrImg) {
+      try {
+        authorQrImg.src = isExtensionAlive() && chrome.runtime?.getURL
+          ? chrome.runtime.getURL("icons/wechat-qr.jpg")
+          : "icons/wechat-qr.jpg";
+      } catch {
+        authorQrImg.src = "icons/wechat-qr.jpg";
+      }
+    }
+
+    async function copyAuthorWechat() {
       const wx = "OliverRockwell";
       try {
         await navigator.clipboard.writeText(wx);
-        showToast(`已复制微信号：${wx}（欢迎反馈问题、提建议或提需求）`, 3500);
+        showToast(`已复制微信号：${wx}（有什么需求也可以找我聊）`, 3500);
       } catch {
         showToast(`作者微信号：${wx}（请手动复制）`, 4000);
       }
+    }
+
+    $("contactAuthorBtn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const panelEl = $("panel");
+      const footerEl = $("feedbackFooter");
+      if (panelEl) {
+        panelEl.scrollTo({ top: panelEl.scrollHeight, behavior: "smooth" });
+      }
+      if (footerEl) {
+        footerEl.scrollIntoView({ behavior: "smooth", block: "end" });
+        footerEl.classList.remove("feedback-flash");
+        void footerEl.offsetWidth;
+        footerEl.classList.add("feedback-flash");
+        clearTimeout(footerEl._flashTimer);
+        footerEl._flashTimer = setTimeout(() => footerEl.classList.remove("feedback-flash"), 1600);
+      }
     });
+    $("copyWechatBtn")?.addEventListener("click", copyAuthorWechat);
+    $("footerWechatId")?.addEventListener("click", copyAuthorWechat);
 
     $("sendSummaryNowBtn").addEventListener("click", () => {
-      buildAndSendSummaryReport(true);
+      buildAndSendSummaryReport({ isManual: true, shouldPush: true });
+    });
+
+    $("refreshSummaryPanelBtn").addEventListener("click", () => {
+      buildAndSendSummaryReport({ isManual: true, shouldPush: false });
+    });
+
+    $("sendSummaryCardBtn").addEventListener("click", () => {
+      buildAndSendSummaryReport({ isManual: true, shouldPush: true });
+    });
+
+    $("copySummaryBtn").addEventListener("click", async () => {
+      const txt = healthState.latestSummaryText || $("summaryReportContent")?.textContent || "";
+      if (!txt) return;
+      try {
+        await navigator.clipboard.writeText(txt);
+        showToast("已复制当前投流总结报告", 2400);
+      } catch {
+        showToast("复制失败，请手动选中总结框内文字复制", 3000);
+      }
+    });
+
+    $("toggleAiKeyVisBtn").addEventListener("click", () => {
+      const inp = $("aiApiKey");
+      const btn = $("toggleAiKeyVisBtn");
+      const show = inp.type === "password";
+      inp.type = show ? "text" : "password";
+      btn.textContent = show ? "隐藏" : "显示";
+    });
+
+    $("aiProvider").addEventListener("change", (e) => {
+      const p = e.target.value || "doubao";
+      config.aiProvider = p;
+      const preset = AI_PROVIDER_DEFAULTS[p];
+      if (preset && p !== "custom") {
+        config.aiEndpoint = preset.endpoint;
+        config.aiModel = preset.model;
+        $("aiEndpoint").value = preset.endpoint;
+        $("aiModel").value = preset.model;
+      }
+      syncAiProviderPlaceholders();
+      saveChannels(false, false);
+      syncAiEngineBadge();
+    });
+
+    ["aiApiKey", "aiModel", "aiEndpoint"].forEach((key) => {
+      const el = $(key);
+      if (!el) return;
+      const onUpdate = () => {
+        config[key] = el.value.trim();
+        saveChannels(false, false);
+        syncAiEngineBadge();
+      };
+      el.addEventListener("input", onUpdate);
+      el.addEventListener("change", onUpdate);
+      el.addEventListener("blur", onUpdate);
     });
 
     // 普通监控参数字段
@@ -4422,7 +5020,7 @@
       const incomingTs = Number(incoming.updatedAt || 0);
       if (incomingTs <= lastChannelsUpdatedAt) return;
       lastChannelsUpdatedAt = incomingTs;
-      for (const f of CHANNEL_STRING_FIELDS) {
+      for (const f of [...CHANNEL_STRING_FIELDS, ...AI_STRING_FIELDS]) {
         if (typeof incoming[f] === "string") config[f] = incoming[f];
       }
       for (const f of CHANNEL_BOOL_FIELDS) {
@@ -4509,7 +5107,7 @@
     if (channelSources.length > 0) {
       const primary = channelSources[0];
       lastChannelsUpdatedAt = Number(primary.updatedAt || 0);
-      for (const f of CHANNEL_STRING_FIELDS) {
+      for (const f of [...CHANNEL_STRING_FIELDS, ...AI_STRING_FIELDS]) {
         let val = typeof primary[f] === "string" ? primary[f].trim() : "";
         // 如果最新源尚未初始化（updatedAt===0）且为空，则从其他备份里找非空值兜底
         if (!val && lastChannelsUpdatedAt === 0) {
@@ -4520,7 +5118,9 @@
             }
           }
         }
-        config[f] = val;
+        if (val || CHANNEL_STRING_FIELDS.includes(f) || f === "aiApiKey") {
+          config[f] = val;
+        }
       }
       for (const f of CHANNEL_BOOL_FIELDS) {
         if (typeof primary[f] === "boolean") {

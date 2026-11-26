@@ -32,6 +32,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true; // 保持异步通道
   }
+  if (message?.type === "GENERATE_AI_SUMMARY") {
+    handleGenerateAiSummary(message.payload)
+      .then((data) => sendResponse({ ok: true, ...data }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
 });
 
 async function handleDispatchAlert(payload) {
@@ -224,5 +230,100 @@ async function safeJson(resp) {
     return await resp.json();
   } catch {
     return null;
+  }
+}
+
+// ---------- AI 投流大脑：支持豆包(火山方舟) / 智谱 GLM-4-Flash / DeepSeek / 通义千问 / 硅基流动 / 自定义 OpenAI 兼容接口 ----------
+const AI_PROVIDER_PRESETS = {
+  doubao: {
+    name: "豆包(火山方舟)",
+    endpoint: "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    defaultModel: "doubao-1-5-pro-32k-250115",
+  },
+  zhipu: {
+    name: "智谱清言(GLM-4-Flash)",
+    endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    defaultModel: "glm-4-flash",
+  },
+  deepseek: {
+    name: "DeepSeek",
+    endpoint: "https://api.deepseek.com/chat/completions",
+    defaultModel: "deepseek-chat",
+  },
+  qwen: {
+    name: "通义千问",
+    endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    defaultModel: "qwen-plus",
+  },
+  siliconflow: {
+    name: "硅基流动",
+    endpoint: "https://api.siliconflow.cn/v1/chat/completions",
+    defaultModel: "Qwen/Qwen2.5-7B-Instruct",
+  },
+  custom: {
+    name: "自定义兼容接口",
+    endpoint: "",
+    defaultModel: "",
+  },
+};
+
+async function handleGenerateAiSummary(payload) {
+  const { aiConfig = {}, metricsData = {} } = payload || {};
+  const providerKey = aiConfig.provider || "doubao";
+  const preset = AI_PROVIDER_PRESETS[providerKey] || AI_PROVIDER_PRESETS.custom;
+  const apiKey = String(aiConfig.apiKey || "").trim();
+  const endpoint = String(aiConfig.endpoint || preset.endpoint || "").trim();
+  const model = String(aiConfig.model || preset.defaultModel || "").trim();
+
+  if (!apiKey) throw new Error("未填写 AI API Key");
+  if (!endpoint) throw new Error("未配置 AI 接口地址");
+  if (!model) throw new Error("未填写模型名称 / 豆包推理接入点 ID");
+
+  const systemPrompt = [
+    "你是资深巨量千川资深投流总监（精通千川乘方、商品卡、全域投放与直播间调控）。",
+    "请根据用户提供的实时投放快照与近30分钟趋势数据，输出一份极度精炼、可直接照做的中文投流总结报告。",
+    "严格按以下 4 点输出（总字数控制在 240~380 字以内，不要客套话、不要 Markdown 代码块、每点用换行分段）：",
+    "1. 【大盘走势与预判】：结合总ROI、消耗增速与近30分钟变化，判断接下来半小时更可能走稳、走高还是下滑，点出核心风险。",
+    "2. 【优质好计划（放量建议）】：点名 1~3 条高ROI或上升趋势的好计划，给出具体动作（加预算/追投/维持）。",
+    "3. 【异常坏计划（止损与撞墙）】：点名跌破下限、快撞预算墙或灰保过保的计划，明确谁该降出价/暂停、谁该马上补预算、谁要盯防跑偏。",
+    "4. 【下个30分钟重点动作】：给出 2~3 条按优先级排好的立刻执行指令。",
+  ].join("\n");
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 22000);
+  try {
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.35,
+        max_tokens: 700,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: JSON.stringify(metricsData) },
+        ],
+      }),
+      signal: controller.signal,
+    });
+    const data = await safeJson(resp);
+    if (!resp.ok) {
+      const errMsg = data?.error?.message || data?.message || `HTTP ${resp.status}`;
+      throw new Error(errMsg);
+    }
+    const content = data?.choices?.[0]?.message?.content?.trim();
+    if (!content) {
+      throw new Error("AI 返回内容为空");
+    }
+    return {
+      text: content,
+      providerName: preset.name,
+      model,
+    };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
