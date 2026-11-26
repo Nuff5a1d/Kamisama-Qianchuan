@@ -110,9 +110,9 @@
     </div>
 
     <div class="arco-table-container">
-      <!-- 表头独立 table -->
-      <div class="arco-table-header">
-        <table>
+      <!-- 表头独立 table（还原千川 ovui-table：thead 第 2 行为共N条计划汇总行） -->
+      <div class="ovui-table__head-wrapper">
+        <table class="ovui-table">
           <colgroup>
             <col style="width:26%" />
             <col style="width:10%" />
@@ -130,12 +130,17 @@
               <th>整体消耗(元)</th>
               <th>整体支付ROI</th>
             </tr>
+            <tr class="summary-row">
+              <th colspan="4">共3条计划</th>
+              <th>1.31万</th>
+              <th>1.05</th>
+            </tr>
           </thead>
         </table>
       </div>
       <!-- 表体独立 table -->
-      <div class="arco-table-body">
-        <table>
+      <div class="ovui-table__body-wrapper">
+        <table class="ovui-table">
           <colgroup>
             <col style="width:26%" />
             <col style="width:10%" />
@@ -145,15 +150,6 @@
             <col style="width:18%" />
           </colgroup>
           <tbody id="planBody">
-            <!-- 顶部汇总行（应被自动排除） -->
-            <tr class="summary-row">
-              <td>共3条计划</td>
-              <td>-</td>
-              <td>-</td>
-              <td>-</td>
-              <td>1.31万</td>
-              <td>1.05</td>
-            </tr>
             <tr data-row-key="1850100001">
               <td>
                 <div><span class="badge">商品卡</span>12.9/红品两设计款/高客</div>

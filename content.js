@@ -208,7 +208,7 @@
         <div class="title">
           <span class="dot" id="headerDot"></span>
           <span>千川 ROI 实时监控</span>
-          <span class="version-tag">v1.1</span>
+          <span class="version-tag">v1.1.1</span>
         </div>
         <button class="icon-btn" id="collapseBtn">收起</button>
       </div>
@@ -603,7 +603,11 @@
       }
     }
 
-    const cleanName = normalizeText(candidateName || rawText).slice(0, 38) || `计划#${fallbackIndex + 1}`;
+    const cleanName =
+      normalizeText(candidateName || rawText)
+        .replace(/\s*ID[:：\s]*\d+.*$/i, "")
+        .trim()
+        .slice(0, 38) || `计划#${fallbackIndex + 1}`;
     const uniqueKey = planId ? `id:${planId}` : `name:${cleanName}`;
     return { id: uniqueKey, planId, name: cleanName };
   }
@@ -670,12 +674,46 @@
   }
 
   // ---------- 多架构计划列表表格扫描 ----------
-  // 解析 <thead>（支持多行合并表头，提取最底层叶子列）
+  // 判断 <thead> 内的某一行是否为千川汇总行（如 ovui-table 会把「共18条计划 | 1120.58 | 2.97」放在 thead 的第二行）
+  function isTheadSummaryRow(tr) {
+    if (!tr) return true;
+    const cls = typeof tr.className === "string" ? tr.className : "";
+    if (SUMMARY_ROW_CLASS_RE.test(cls)) return true;
+
+    const cells = Array.from(tr.children).filter((c) => c.tagName === "TH" || c.tagName === "TD");
+    if (cells.length === 0) return true;
+
+    const nonEmptyTexts = cells
+      .map((c) => normalizeText(c.innerText || c.textContent))
+      .filter(Boolean);
+    if (nonEmptyTexts.length === 0) return true;
+
+    if (nonEmptyTexts.slice(0, 3).some((t) => SUMMARY_ROW_TEXT_RE.test(t))) {
+      return true;
+    }
+
+    // 真实表头应以中文/英文列名为主；若半数以上非空单元格是纯数字或 "-"，说明是汇总数据行
+    const numericLikeCount = nonEmptyTexts.filter((t) =>
+      /^([-—–]+|[¥￥]?\d+(?:,\d+)*(?:\.\d+)?[万亿wWkK%]?)$/.test(t)
+    ).length;
+    if (nonEmptyTexts.length >= 3 && numericLikeCount / nonEmptyTexts.length >= 0.5) {
+      return true;
+    }
+
+    return false;
+  }
+
+  // 解析 <thead>（支持多行合并表头，并自动剔除放在 thead 里的千川「共N条计划」汇总行）
   function extractTableHeaderLeafCells(table) {
-    const headerRows = Array.from(table.querySelectorAll("thead tr")).filter((tr) => isVisible(tr));
+    const rawHeaderRows = Array.from(table.querySelectorAll("thead tr")).filter((tr) => isVisible(tr));
+    let headerRows = rawHeaderRows.filter((tr) => !isTheadSummaryRow(tr));
+    // 若所有 thead tr 都被过滤（极少数纯数字表头场景），回退使用第一行
+    if (headerRows.length === 0 && rawHeaderRows.length > 0) {
+      headerRows = [rawHeaderRows[0]];
+    }
     if (headerRows.length === 0) {
       const firstRow = table.querySelector("tr");
-      if (firstRow && firstRow.querySelector("th")) {
+      if (firstRow && firstRow.querySelector("th") && !isTheadSummaryRow(firstRow)) {
         headerRows.push(firstRow);
       }
     }
@@ -707,11 +745,16 @@
       cell,
       text: normalizeText(cell?.innerText || cell?.textContent || ""),
       rect: cell ? cell.getBoundingClientRect() : null,
+      colCount: lastRow.length,
     }));
   }
 
-  function findRowCellByColumn(cells, colIdx, headerRect) {
-    // 优先通过 X 坐标中心点/重叠匹配（可免疫 checkbox / colSpan / 固定列偏移）
+  function findRowCellByColumn(cells, colIdx, headerRect, expectedColCount = 0) {
+    // 列数完全一致时直接按列下标取单元格（免疫横向滚动与 sticky 固定列遮挡重叠）
+    if (expectedColCount > 0 && cells.length === expectedColCount && colIdx >= 0 && colIdx < cells.length) {
+      return cells[colIdx];
+    }
+    // 列数不一致时（如 colSpan 或固定列拆分表）通过 X 坐标中心点/重叠匹配
     if (headerRect && headerRect.width > 0) {
       const hCenter = headerRect.left + headerRect.width / 2;
       let best = null;
@@ -781,13 +824,15 @@
           excludedSummaryCount++;
           return;
         }
-        const roiCell = findRowCellByColumn(cells, roiIdx, headerCols[roiIdx]?.rect);
+        const expectedCols = headerCols.length;
+        const roiCell = findRowCellByColumn(cells, roiIdx, headerCols[roiIdx]?.rect, expectedCols);
         const roiVal = parseMetricNumber(roiCell?.innerText || roiCell?.textContent);
         if (roiVal === null) return;
 
-        const costCell = costIdx >= 0 ? findRowCellByColumn(cells, costIdx, headerCols[costIdx]?.rect) : null;
+        const costCell =
+          costIdx >= 0 ? findRowCellByColumn(cells, costIdx, headerCols[costIdx]?.rect, expectedCols) : null;
         const costVal = costCell ? parseMetricNumber(costCell.innerText || costCell.textContent) : null;
-        const nameCell = findRowCellByColumn(cells, nameIdx, headerCols[nameIdx]?.rect) || cells[0];
+        const nameCell = findRowCellByColumn(cells, nameIdx, headerCols[nameIdx]?.rect, expectedCols) || cells[0];
         const ident = extractPlanIdentity(nameCell, tr, i);
 
         if (!seenRows.has(ident.id)) {
@@ -916,7 +961,7 @@
       };
 
       roiRows.forEach((rowObj, idx) => {
-        const roiCell = findRowCellByColumn(rowObj.cells, roiCol.idx, roiCol.rect);
+        const roiCell = findRowCellByColumn(rowObj.cells, roiCol.idx, roiCol.rect, roiCol.colCount || 0);
         const roiVal = parseMetricNumber(roiCell?.innerText || roiCell?.textContent);
         if (roiVal === null) return;
 
@@ -924,14 +969,15 @@
         if (costCol) {
           const costRow = findPairedRow(rowObj, idx, costRows);
           if (costRow) {
-            const costCell = findRowCellByColumn(costRow.cells, costCol.idx, costCol.rect);
+            const costCell = findRowCellByColumn(costRow.cells, costCol.idx, costCol.rect, costCol.colCount || 0);
             costVal = parseMetricNumber(costCell?.innerText || costCell?.textContent);
           }
         }
 
         const nameRow = findPairedRow(rowObj, idx, nameRows) || rowObj;
         const nameCell =
-          (nameCol ? findRowCellByColumn(nameRow.cells, nameCol.idx, nameCol.rect) : null) || nameRow.cells[0];
+          (nameCol ? findRowCellByColumn(nameRow.cells, nameCol.idx, nameCol.rect, nameCol.colCount || 0) : null) ||
+          nameRow.cells[0];
         const ident = extractPlanIdentity(nameCell, nameRow.tr, idx);
 
         if (!seenRows.has(ident.id)) {
@@ -1675,7 +1721,7 @@
       }));
     const scanRes = scanCampaignTables();
     return {
-      version: "1.1.0",
+      version: "1.1.1",
       urlPath: location.origin + location.pathname,
       scanMeta: scanRes.meta,
       scannedCount: scanRes.rows.length,
