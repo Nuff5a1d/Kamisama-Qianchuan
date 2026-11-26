@@ -45,8 +45,9 @@
       sec_target: false,
       sec_rules: false,
       sec_push: false,
-      sec_ai: true,
+      sec_ai: false,
       sec_logs: false,
+      sec_author: true,
     },
     lowerLimit: "1.5",
     upperLimit: "4.0",
@@ -537,19 +538,8 @@
       border-color: #fbbf24; color: #fffbeb;
       box-shadow: 0 0 10px rgba(251, 191, 36, 0.25);
     }
-    .author-qr-wrap {
-      background: #ffffff; padding: 5px; border-radius: 9px;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
-      flex-shrink: 0; text-align: center;
-    }
-    .author-qr-img {
-      display: block; width: 112px; height: 112px; object-fit: contain; border-radius: 5px;
-    }
-    .author-qr-tip {
-      margin-top: 3px; font-size: 10px; color: #475569; font-weight: 600;
-    }
     .author-info {
-      flex: 1 1 200px; display: flex; flex-direction: column; gap: 7px; min-width: 0;
+      display: flex; flex-direction: column; gap: 7px; min-width: 0;
     }
     .author-wx-row {
       display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
@@ -558,15 +548,54 @@
       display: inline-flex; align-items: center; gap: 5px;
       padding: 4px 11px; border-radius: 8px; cursor: pointer;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 14px; font-weight: 800; letter-spacing: 0.4px;
+      font-size: 13.5px; font-weight: 800; letter-spacing: 0.4px;
       color: #ffffff;
       background: linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%);
       border: 1px solid #7dd3fc;
-      box-shadow: 0 0 12px rgba(56, 189, 248, 0.38);
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
       transition: transform 0.12s ease, filter 0.15s ease;
-      user-select: all;
+      user-select: none;
     }
     .wechat-highlight-id:hover { filter: brightness(1.1); transform: translateY(-1px); }
+    .author-home-link {
+      color: #60a5fa; font-weight: 700; text-decoration: none;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      border-bottom: 1px dashed rgba(96, 165, 250, 0.55);
+      padding-bottom: 1px;
+    }
+    .author-home-link:hover { color: #93c5fd; border-bottom-color: #93c5fd; }
+    .qr-modal-backdrop {
+      position: fixed; inset: 0; z-index: 2147483647;
+      background: rgba(6, 10, 20, 0.74); backdrop-filter: blur(3px);
+      display: none; align-items: center; justify-content: center;
+      padding: 16px;
+    }
+    .qr-modal-backdrop.open { display: flex; }
+    .qr-modal-card {
+      width: 268px; max-width: 92vw;
+      background: #141a29; color: #e5e9f2;
+      border: 1px solid #33456b; border-radius: 14px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.58);
+      padding: 14px; display: flex; flex-direction: column; align-items: center; gap: 10px;
+    }
+    .qr-modal-head {
+      width: 100%; display: flex; align-items: center; justify-content: space-between;
+      font-size: 13px; font-weight: 700; color: #f8fafc;
+    }
+    .author-qr-wrap {
+      background: #ffffff; padding: 8px; border-radius: 10px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
+      text-align: center;
+    }
+    .author-qr-img {
+      display: block; width: 186px; height: 186px; object-fit: contain; border-radius: 6px;
+    }
+    .author-qr-tip {
+      margin-top: 4px; font-size: 11px; color: #475569; font-weight: 600;
+    }
+    .qr-modal-actions {
+      width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
     .body { padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 
     .status-card {
@@ -735,18 +764,23 @@
     .guide-box a:hover { text-decoration: underline; }
     .guide-box strong { color: #f8fafc; }
     .feedback-footer {
-      display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
       background: linear-gradient(145deg, #172036 0%, #131927 100%);
-      border: 1px solid #2f4166; border-radius: 12px;
-      padding: 12px 14px; font-size: 11.5px; color: #cbd5e1;
+      border: 1px solid #2f4166; border-radius: 10px;
+      padding: 10px 12px; font-size: 11.5px; color: #cbd5e1;
       transition: border-color 0.25s ease, box-shadow 0.25s ease;
+    }
+    .feedback-footer.collapsed {
+      padding: 8px 12px;
+    }
+    .feedback-footer:not(.collapsed) .author-fold-hint {
+      display: none;
     }
     .feedback-footer.feedback-flash {
       border-color: #fbbf24;
       box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.35), 0 8px 24px rgba(251, 191, 36, 0.18);
     }
     .feedback-title {
-      font-size: 12.5px; font-weight: 700; color: #f8fafc;
+      font-size: 12px; font-weight: 700; color: #f8fafc;
     }
     .feedback-custom-tag {
       display: inline-block; width: fit-content;
@@ -807,10 +841,10 @@
         <div class="title">
           <span class="dot" id="headerDot"></span>
           <span>Kamisama - 全链路千川</span>
-          <span class="version-tag">v1.3.0</span>
+          <span class="version-tag">v1.3.1</span>
         </div>
         <div class="header-actions">
-          <button class="icon-btn contact-btn" id="contactAuthorBtn" type="button" title="跳转到底部查看作者微信与二维码">联系作者</button>
+          <button class="icon-btn contact-btn" id="contactAuthorBtn" type="button" title="展开并跳转到底部联系作者区">联系作者</button>
           <button class="icon-btn" id="landscapeModeBtn" title="切换横屏宽版 / 竖屏窄版布局">横屏</button>
           <button class="icon-btn" id="compactModeBtn" title="折叠下方配置区，专注巡检异常计划与总结报告">极简</button>
           <button class="icon-btn" id="collapseBtn">收起</button>
@@ -1183,25 +1217,53 @@
         </div>
         </div><!-- /sectionsGrid -->
 
-        <!-- 底部联系作者区（含微信二维码 + 醒目微信号） -->
-        <div class="feedback-footer" id="feedbackFooter">
-          <div class="author-qr-wrap">
-            <img class="author-qr-img" id="authorQrImg" alt="作者微信二维码">
-            <div class="author-qr-tip">微信扫一扫添加好友</div>
+        <!-- 底部联系作者区（默认折叠，点击顶栏「联系作者」或本栏标题展开；点微信号弹出二维码） -->
+        <div class="section feedback-footer collapsed" data-sec="sec_author" id="feedbackFooter">
+          <div class="section-title collapsible-head" data-sec-toggle="sec_author">
+            <span class="sec-head-left">
+              <span class="sec-chevron">▾</span>
+              <span class="sec-label feedback-title">💬 联系作者 · 内测反馈 / 提建议</span>
+            </span>
+            <span class="muted author-fold-hint">点击展开</span>
           </div>
-          <div class="author-info">
-            <div class="feedback-title">💬 联系作者 · 内测反馈 / 提建议</div>
-            <div class="author-wx-row">
-              <span>作者微信：</span>
-              <span class="wechat-highlight-id" id="footerWechatId" title="点击复制微信号">OliverRockwell</span>
-              <button class="btn btn-primary btn-sm" id="copyWechatBtn" type="button">复制微信号</button>
+          <div class="sec-body">
+            <div class="author-info">
+              <div class="author-wx-row">
+                <span>作者微信：</span>
+                <span class="wechat-highlight-id" id="footerWechatId" title="点击弹出微信二维码">OliverRockwell</span>
+                <button class="btn btn-primary btn-sm" id="copyWechatBtn" type="button">复制微信号</button>
+                <span class="muted">（点微信号弹二维码）</span>
+              </div>
+              <div class="author-wx-row">
+                <span>个人主页：</span>
+                <a class="author-home-link" id="authorHomeLink" href="https://www.kamisama.si" target="_blank" rel="noopener noreferrer">www.kamisama.si</a>
+              </div>
+              <span class="feedback-custom-tag">有什么需求也可以找我聊</span>
+              <div class="muted">欢迎反馈使用问题、提新功能建议，或交流 AI 素材；有什么需求和反馈，社恐不想加微信也可以去我的主页留言。</div>
             </div>
-            <span class="feedback-custom-tag">有什么需求也可以找我聊</span>
-            <div class="muted">欢迎反馈使用问题、提新功能建议，或交流 AI 素材 / 插件软件定制</div>
           </div>
         </div>
       </div>
       <div class="toast" id="toastBox"></div>
+    </div>
+
+    <!-- 点击微信号后弹出的二维码弹窗 -->
+    <div class="qr-modal-backdrop" id="wechatQrModal" aria-hidden="true">
+      <div class="qr-modal-card" id="wechatQrModalCard">
+        <div class="qr-modal-head">
+          <span>💬 作者微信二维码</span>
+          <button class="icon-btn" id="closeWechatQrBtn" type="button">关闭</button>
+        </div>
+        <div class="author-qr-wrap">
+          <img class="author-qr-img" id="authorQrImg" alt="作者微信二维码">
+          <div class="author-qr-tip">微信扫一扫添加好友</div>
+        </div>
+        <div class="muted">微信号：<strong style="color:#f8fafc;">OliverRockwell</strong></div>
+        <div class="qr-modal-actions">
+          <button class="btn btn-primary btn-sm" id="modalCopyWechatBtn" type="button">复制微信号</button>
+          <a class="btn btn-ghost btn-sm" href="https://www.kamisama.si" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">去主页留言</a>
+        </div>
+      </div>
     </div>
   `;
   shadow.appendChild(root);
@@ -4836,24 +4898,56 @@
       }
     }
 
+    function setWechatQrModalOpen(open) {
+      const modal = $("wechatQrModal");
+      if (!modal) return;
+      modal.classList.toggle("open", open);
+      modal.setAttribute("aria-hidden", open ? "false" : "true");
+    }
+
     $("contactAuthorBtn")?.addEventListener("click", (e) => {
       e.stopPropagation();
+      if (!config.collapsedSections || typeof config.collapsedSections !== "object") {
+        config.collapsedSections = { ...DEFAULT_CONFIG.collapsedSections };
+      }
+      if (config.collapsedSections.sec_author) {
+        config.collapsedSections.sec_author = false;
+        syncCollapsedSections();
+        saveConfig();
+      }
       const panelEl = $("panel");
       const footerEl = $("feedbackFooter");
-      if (panelEl) {
-        panelEl.scrollTo({ top: panelEl.scrollHeight, behavior: "smooth" });
-      }
-      if (footerEl) {
-        footerEl.scrollIntoView({ behavior: "smooth", block: "end" });
-        footerEl.classList.remove("feedback-flash");
-        void footerEl.offsetWidth;
-        footerEl.classList.add("feedback-flash");
-        clearTimeout(footerEl._flashTimer);
-        footerEl._flashTimer = setTimeout(() => footerEl.classList.remove("feedback-flash"), 1600);
-      }
+      requestAnimationFrame(() => {
+        if (panelEl) {
+          panelEl.scrollTo({ top: panelEl.scrollHeight, behavior: "smooth" });
+        }
+        if (footerEl) {
+          footerEl.scrollIntoView({ behavior: "smooth", block: "end" });
+          footerEl.classList.remove("feedback-flash");
+          void footerEl.offsetWidth;
+          footerEl.classList.add("feedback-flash");
+          clearTimeout(footerEl._flashTimer);
+          footerEl._flashTimer = setTimeout(() => footerEl.classList.remove("feedback-flash"), 1600);
+        }
+      });
     });
     $("copyWechatBtn")?.addEventListener("click", copyAuthorWechat);
-    $("footerWechatId")?.addEventListener("click", copyAuthorWechat);
+    $("modalCopyWechatBtn")?.addEventListener("click", copyAuthorWechat);
+    $("footerWechatId")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setWechatQrModalOpen(true);
+    });
+    $("closeWechatQrBtn")?.addEventListener("click", () => setWechatQrModalOpen(false));
+    $("wechatQrModal")?.addEventListener("click", (e) => {
+      if (e.target === $("wechatQrModal")) {
+        setWechatQrModalOpen(false);
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && $("wechatQrModal")?.classList.contains("open")) {
+        setWechatQrModalOpen(false);
+      }
+    });
 
     $("sendSummaryNowBtn").addEventListener("click", () => {
       buildAndSendSummaryReport({ isManual: true, shouldPush: true });
@@ -5083,7 +5177,16 @@
 
     const legacyCfg = localRes?.[STORAGE_KEY] || null;
     if (legacyCfg) {
-      config = { ...config, ...legacyCfg };
+      config = {
+        ...config,
+        ...legacyCfg,
+        collapsedSections: {
+          ...DEFAULT_CONFIG.collapsedSections,
+          ...(legacyCfg.collapsedSections && typeof legacyCfg.collapsedSections === "object"
+            ? legacyCfg.collapsedSections
+            : {}),
+        },
+      };
     }
 
     // 汇总 4 个来源的推送渠道，按 updatedAt 最新优先；若是旧版首次迁移（updatedAt=0）则用非空值补齐
@@ -5174,6 +5277,17 @@
     if (!legacyCfg || typeof legacyCfg.onlyRegulating !== "boolean") {
       config.onlyDelivering = true;
       config.onlyRegulating = true;
+      migrated = true;
+    }
+    // 首次升级到 v1.3.1：默认展开「4. AI 投流大脑」、默认折叠底部「联系作者」
+    if (!legacyCfg || !legacyCfg.migratedV131) {
+      config.collapsedSections = {
+        ...DEFAULT_CONFIG.collapsedSections,
+        ...(config.collapsedSections && typeof config.collapsedSections === "object" ? config.collapsedSections : {}),
+        sec_ai: false,
+        sec_author: true,
+      };
+      config.migratedV131 = true;
       migrated = true;
     }
     if (migrated) saveConfig();
