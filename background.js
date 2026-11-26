@@ -76,16 +76,16 @@ async function handleDispatchAlert(payload) {
       .map((s) => s.trim())
       .filter(Boolean);
     try {
+      const isWarnLevel = level === "low" || level === "error" || level === "warn";
       const resp = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           msgtype: "markdown",
           markdown: {
-            content:
-              level === "low"
-                ? markdownText.replace(title, `<font color="warning">${title}</font>`)
-                : markdownText.replace(title, `<font color="info">${title}</font>`),
+            content: isWarnLevel
+              ? markdownText.replace(title, `<font color="warning">${title}</font>`)
+              : markdownText.replace(title, `<font color="info">${title}</font>`),
           },
         }),
       });

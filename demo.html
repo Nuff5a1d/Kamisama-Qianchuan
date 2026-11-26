@@ -2,20 +2,26 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <title>千川 ROI 实时监控测试页（模拟大屏 + 计划列表）</title>
+  <title>千川 ROI 实时监控测试页（模拟全域推商品拆分表格 + 页面异常）</title>
   <style>
     body {
-      margin: 0; padding: 28px 36px; background: #0f1219; color: #e5e9f2;
+      margin: 0; padding: 24px 32px; background: #0f1219; color: #e5e9f2;
       font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
     }
     h1 { font-size: 20px; margin: 0 0 8px; }
-    .sub { color: #94a3b8; font-size: 13px; margin-bottom: 24px; }
-    .cards { display: grid; grid-template-columns: repeat(3, minmax(180px, 240px)); gap: 16px; margin-bottom: 28px; }
+    .sub { color: #94a3b8; font-size: 13px; margin-bottom: 18px; }
+    .notice-bar {
+      background: #332a14; border: 1px solid #6b531b; color: #fde68a;
+      border-radius: 8px; padding: 8px 12px; font-size: 12px; margin-bottom: 16px;
+    }
+    .cards { display: grid; grid-template-columns: repeat(4, minmax(170px, 220px)); gap: 14px; margin-bottom: 22px; }
     .card {
-      background: #181d2b; border: 1px solid #2a3349; border-radius: 12px; padding: 16px 18px;
+      background: #181d2b; border: 1px solid #2a3349; border-radius: 12px; padding: 14px 16px;
     }
     .card-label { font-size: 12px; color: #94a3b8; }
-    .card-value { font-size: 32px; font-weight: 700; margin: 8px 0 10px; color: #38bdf8; }
+    .card-row { display: flex; align-items: baseline; gap: 8px; margin: 8px 0 10px; }
+    .card-value { font-size: 30px; font-weight: 700; color: #38bdf8; }
+    .card-trend { font-size: 12px; color: #f87171; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; }
     button {
       background: #26314a; color: #f8fafc; border: 1px solid #3a496b;
@@ -23,76 +29,181 @@
     }
     button:hover { background: #334264; }
     .table-wrap {
-      background: #181d2b; border: 1px solid #2a3349; border-radius: 12px; padding: 16px; max-width: 820px;
+      background: #181d2b; border: 1px solid #2a3349; border-radius: 12px; padding: 16px; max-width: 1080px;
     }
-    .table-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #252e42; }
-    th { color: #93c5fd; font-weight: 600; }
+    .table-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px; flex-wrap: wrap; }
+    .arco-table-container { border: 1px solid #252e42; border-radius: 8px; overflow: hidden; }
+    .arco-table-header table, .arco-table-body table {
+      width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px;
+    }
+    th, td { padding: 10px 10px; text-align: left; border-bottom: 1px solid #252e42; vertical-align: top; }
+    th { color: #93c5fd; font-weight: 600; background: #1d2436; }
+    .summary-row td { background: #161c2b; font-weight: 600; color: #cbd5e1; }
+    .sub-val { font-size: 11px; color: #64748b; margin-top: 2px; }
+    .badge { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: #7f1d1d; color: #fecaca; margin-right: 4px; }
+    .modal-mask {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none;
+      align-items: center; justify-content: center; z-index: 9999;
+    }
+    .modal-mask.show { display: flex; }
+    .modal-box {
+      background: #1a1f2e; border: 1px solid #3b4764; border-radius: 12px;
+      padding: 20px 24px; width: 360px; box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .toast-err {
+      position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+      background: #7f1d1d; color: #fee2e2; border: 1px solid #ef4444;
+      padding: 10px 16px; border-radius: 8px; display: none; z-index: 9999;
+    }
+    .toast-err.show { display: block; }
   </style>
 </head>
 <body>
-  <h1>巨量千川 ROI 实时监控测试台</h1>
-  <div class="sub">装好插件后打开此页即可秒级测试：可手动点按钮模拟 ROI 跌破下限/突破上限，验证弹窗、提示音和手机微信推送。</div>
+  <div class="notice-bar">尊敬的客户，近期大促数据统计结果异常波动属正常现象，请勿将此公告条误判为页面报错。</div>
+
+  <div style="display:flex;justify-content:space-between;align-items:center;max-width:1080px;">
+    <h1>巨量千川全域「推商品」ROI 监控测试台</h1>
+    <span id="updateClock" style="color:#94a3b8;font-size:12px;">11-26 16:14 更新</span>
+  </div>
+  <div class="sub">模拟真实千川 Arco/Semi 表头表体分离结构、共N条计划汇总行、目标ROI干扰列、双行「基础」数值、万单位消耗及登录失效/报错弹窗。</div>
 
   <div class="cards">
     <div class="card">
-      <div class="card-label">实时支付 ROI（大屏指标）</div>
-      <div class="card-value" id="liveRoi">2.35</div>
+      <div class="card-label">整体支付ROI</div>
+      <div class="card-row">
+        <div class="card-value" id="liveRoi">3.00</div>
+        <div class="card-trend">+4.17%</div>
+      </div>
       <div class="actions">
-        <button onclick="setLiveRoi(1.12)">模拟跌破下限 (1.12)</button>
-        <button onclick="setLiveRoi(4.68)">模拟突破上限 (4.68)</button>
-        <button onclick="setLiveRoi(2.40)">恢复正常 (2.40)</button>
+        <button onclick="setLiveRoi(1.12)">跌破下限 (1.12)</button>
+        <button onclick="setLiveRoi(4.68)">突破上限 (4.68)</button>
+        <button onclick="setLiveRoi(3.00)">恢复正常 (3.00)</button>
       </div>
     </div>
     <div class="card">
-      <div class="card-label">今日总消耗（元）</div>
-      <div class="card-value" id="liveCost" style="color:#a7f3d0;">3,860</div>
+      <div class="card-label">整体消耗(元)</div>
+      <div class="card-row">
+        <div class="card-value" id="liveCost" style="color:#a7f3d0;">1,108.68</div>
+        <div class="card-trend" style="color:#4ade80;">-24.96%</div>
+      </div>
       <div class="actions">
         <button id="autoTickBtn" onclick="toggleAutoTick()">开启自动随机跳数</button>
+      </div>
+    </div>
+    <div class="card" style="grid-column: span 2;">
+      <div class="card-label">页面异常提醒测试</div>
+      <div class="actions" style="margin-top:12px;">
+        <button onclick="toggleLoginModal(true)">模拟登录态失效弹窗</button>
+        <button onclick="toggleErrorToast(true)">模拟页面接口报错</button>
+        <button onclick="clearAnomalies()">清除异常模拟</button>
       </div>
     </div>
   </div>
 
   <div class="table-wrap">
     <div class="table-head">
-      <strong>推广计划列表（测试多行监控模式）</strong>
+      <strong>全域投放 · 推商品（模拟 Arco 表头/表体分离双 table）</strong>
       <div class="actions">
         <button onclick="randomizeTable()">刷新</button>
-        <button onclick="triggerRowAlert()">模拟计划A跌破下限</button>
+        <button onclick="triggerRowAlert()">模拟商品卡计划异常</button>
       </div>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>计划名称</th>
-          <th>状态</th>
-          <th>消耗(元)</th>
-          <th>支付ROI</th>
-        </tr>
-      </thead>
-      <tbody id="planBody">
-        <tr>
-          <td>短袖T恤-直播放量计划A</td>
-          <td>投放中</td>
-          <td id="costA">680.5</td>
-          <td id="roiA">2.18</td>
-        </tr>
-        <tr>
-          <td>纯棉连衣裙-全域推广B</td>
-          <td>投放中</td>
-          <td id="costB">1240.0</td>
-          <td id="roiB">3.12</td>
-        </tr>
-        <tr>
-          <td>新品测款-小预算计划C（低于消耗门槛不报警）</td>
-          <td>投放中</td>
-          <td id="costC">35.0</td>
-          <td id="roiC">0.45</td>
-        </tr>
-      </tbody>
-    </table>
+
+    <div class="arco-table-container">
+      <!-- 表头独立 table -->
+      <div class="arco-table-header">
+        <table>
+          <colgroup>
+            <col style="width:26%" />
+            <col style="width:10%" />
+            <col style="width:18%" />
+            <col style="width:10%" />
+            <col style="width:18%" />
+            <col style="width:18%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>计划</th>
+              <th>计划状态</th>
+              <th>投放设置</th>
+              <th>目标ROI</th>
+              <th>整体消耗(元)</th>
+              <th>整体支付ROI</th>
+            </tr>
+          </thead>
+        </table>
+      </div>
+      <!-- 表体独立 table -->
+      <div class="arco-table-body">
+        <table>
+          <colgroup>
+            <col style="width:26%" />
+            <col style="width:10%" />
+            <col style="width:18%" />
+            <col style="width:10%" />
+            <col style="width:18%" />
+            <col style="width:18%" />
+          </colgroup>
+          <tbody id="planBody">
+            <!-- 顶部汇总行（应被自动排除） -->
+            <tr class="summary-row">
+              <td>共3条计划</td>
+              <td>-</td>
+              <td>-</td>
+              <td>-</td>
+              <td>1.31万</td>
+              <td>1.05</td>
+            </tr>
+            <tr data-row-key="1850100001">
+              <td>
+                <div><span class="badge">商品卡</span>12.9/红品两设计款/高客</div>
+                <div class="sub-val">ID: 1850100001</div>
+                <div class="sub-val">推商品 · 素材</div>
+              </td>
+              <td>投放中</td>
+              <td>每日预算 66666元<br /><span class="sub-val">净成交ROI 目标 3.45</span></td>
+              <td>3.45</td>
+              <td id="costA">313.58<div class="sub-val">基础 313.58</div></td>
+              <td id="roiA">2.81<div class="sub-val">基础 2.81</div></td>
+            </tr>
+            <tr data-row-key="1850100002">
+              <td>
+                <div><span class="badge">商品卡</span>12.9/爆品连衣裙/大消耗万单位</div>
+                <div class="sub-val">ID: 1850100002</div>
+                <div class="sub-val">推商品 · 素材</div>
+              </td>
+              <td>投放中</td>
+              <td>每日预算 66666元<br /><span class="sub-val">净成交ROI 目标 3.45</span></td>
+              <td>3.45</td>
+              <td id="costB">1.25万<div class="sub-val">基础 1.25万</div></td>
+              <td id="roiB">3.12<div class="sub-val">基础 3.12</div></td>
+            </tr>
+            <tr data-row-key="1850100003">
+              <td>
+                <div><span class="badge">商品卡</span>新品测款-低于门槛不告警</div>
+                <div class="sub-val">ID: 1850100003</div>
+              </td>
+              <td>投放中</td>
+              <td>每日预算 3000元</td>
+              <td>3.45</td>
+              <td id="costC">25.00<div class="sub-val">基础 25.00</div></td>
+              <td id="roiC">0.45<div class="sub-val">基础 0.45</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
+
+  <div class="modal-mask" id="loginModal" role="dialog">
+    <div class="modal-box">
+      <h3 style="margin:0 0 8px;">登录已失效</h3>
+      <p style="color:#94a3b8;font-size:13px;">您的巨量千川账号会话已过期，请重新登录以继续查看实时数据。</p>
+      <button onclick="toggleLoginModal(false)">关闭模拟弹窗</button>
+    </div>
+  </div>
+
+  <div class="toast-err" id="errorToast" role="alert">数据加载异常：网络请求失败，请稍后重试</div>
 
   <script>
     let tickTimer = null;
@@ -115,13 +226,26 @@
       }
     }
     function randomizeTable() {
-      document.getElementById("roiA").textContent = (1.0 + Math.random() * 3.5).toFixed(2);
-      document.getElementById("roiB").textContent = (1.5 + Math.random() * 3.2).toFixed(2);
-      document.getElementById("costA").textContent = (680 + Math.random() * 50).toFixed(1);
+      const r1 = (1.0 + Math.random() * 3.5).toFixed(2);
+      const r2 = (1.5 + Math.random() * 3.2).toFixed(2);
+      document.getElementById("roiA").innerHTML = `${r1}<div class="sub-val">基础 ${r1}</div>`;
+      document.getElementById("roiB").innerHTML = `${r2}<div class="sub-val">基础 ${r2}</div>`;
+      const now = new Date();
+      document.getElementById("updateClock").textContent = `11-26 ${now.toTimeString().slice(0, 5)} 更新`;
     }
     function triggerRowAlert() {
-      document.getElementById("roiA").textContent = "0.95";
-      document.getElementById("roiB").textContent = "4.85";
+      document.getElementById("roiA").innerHTML = `0.95<div class="sub-val">基础 0.95</div>`;
+      document.getElementById("roiB").innerHTML = `4.85<div class="sub-val">基础 4.85</div>`;
+    }
+    function toggleLoginModal(show) {
+      document.getElementById("loginModal").classList.toggle("show", show);
+    }
+    function toggleErrorToast(show) {
+      document.getElementById("errorToast").classList.toggle("show", show);
+    }
+    function clearAnomalies() {
+      toggleLoginModal(false);
+      toggleErrorToast(false);
     }
   </script>
 </body>
