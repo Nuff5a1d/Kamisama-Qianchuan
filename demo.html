@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>千川 ROI 实时监控测试页（模拟大屏 + 计划列表）</title>
+  <style>
+    body {
+      margin: 0; padding: 28px 36px; background: #0f1219; color: #e5e9f2;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    h1 { font-size: 20px; margin: 0 0 8px; }
+    .sub { color: #94a3b8; font-size: 13px; margin-bottom: 24px; }
+    .cards { display: grid; grid-template-columns: repeat(3, minmax(180px, 240px)); gap: 16px; margin-bottom: 28px; }
+    .card {
+      background: #181d2b; border: 1px solid #2a3349; border-radius: 12px; padding: 16px 18px;
+    }
+    .card-label { font-size: 12px; color: #94a3b8; }
+    .card-value { font-size: 32px; font-weight: 700; margin: 8px 0 10px; color: #38bdf8; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      background: #26314a; color: #f8fafc; border: 1px solid #3a496b;
+      border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px;
+    }
+    button:hover { background: #334264; }
+    .table-wrap {
+      background: #181d2b; border: 1px solid #2a3349; border-radius: 12px; padding: 16px; max-width: 820px;
+    }
+    .table-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #252e42; }
+    th { color: #93c5fd; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>巨量千川 ROI 实时监控测试台</h1>
+  <div class="sub">装好插件后打开此页即可秒级测试：可手动点按钮模拟 ROI 跌破下限/突破上限，验证弹窗、提示音和手机微信推送。</div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="card-label">实时支付 ROI（大屏指标）</div>
+      <div class="card-value" id="liveRoi">2.35</div>
+      <div class="actions">
+        <button onclick="setLiveRoi(1.12)">模拟跌破下限 (1.12)</button>
+        <button onclick="setLiveRoi(4.68)">模拟突破上限 (4.68)</button>
+        <button onclick="setLiveRoi(2.40)">恢复正常 (2.40)</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label">今日总消耗（元）</div>
+      <div class="card-value" id="liveCost" style="color:#a7f3d0;">3,860</div>
+      <div class="actions">
+        <button id="autoTickBtn" onclick="toggleAutoTick()">开启自动随机跳数</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <div class="table-head">
+      <strong>推广计划列表（测试多行监控模式）</strong>
+      <div class="actions">
+        <button onclick="randomizeTable()">刷新</button>
+        <button onclick="triggerRowAlert()">模拟计划A跌破下限</button>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>计划名称</th>
+          <th>状态</th>
+          <th>消耗(元)</th>
+          <th>支付ROI</th>
+        </tr>
+      </thead>
+      <tbody id="planBody">
+        <tr>
+          <td>短袖T恤-直播放量计划A</td>
+          <td>投放中</td>
+          <td id="costA">680.5</td>
+          <td id="roiA">2.18</td>
+        </tr>
+        <tr>
+          <td>纯棉连衣裙-全域推广B</td>
+          <td>投放中</td>
+          <td id="costB">1240.0</td>
+          <td id="roiB">3.12</td>
+        </tr>
+        <tr>
+          <td>新品测款-小预算计划C（低于消耗门槛不报警）</td>
+          <td>投放中</td>
+          <td id="costC">35.0</td>
+          <td id="roiC">0.45</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    let tickTimer = null;
+    function setLiveRoi(val) {
+      document.getElementById("liveRoi").textContent = Number(val).toFixed(2);
+    }
+    function toggleAutoTick() {
+      const btn = document.getElementById("autoTickBtn");
+      if (tickTimer) {
+        clearInterval(tickTimer);
+        tickTimer = null;
+        btn.textContent = "开启自动随机跳数";
+      } else {
+        btn.textContent = "停止自动跳数";
+        tickTimer = setInterval(() => {
+          const cur = Number(document.getElementById("liveRoi").textContent);
+          const next = Math.max(0.5, cur + (Math.random() - 0.5) * 0.6);
+          setLiveRoi(next);
+        }, 1500);
+      }
+    }
+    function randomizeTable() {
+      document.getElementById("roiA").textContent = (1.0 + Math.random() * 3.5).toFixed(2);
+      document.getElementById("roiB").textContent = (1.5 + Math.random() * 3.2).toFixed(2);
+      document.getElementById("costA").textContent = (680 + Math.random() * 50).toFixed(1);
+    }
+    function triggerRowAlert() {
+      document.getElementById("roiA").textContent = "0.95";
+      document.getElementById("roiB").textContent = "4.85";
+    }
+  </script>
+</body>
+</html>

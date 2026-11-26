@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "千川 ROI 实时监控告警",
+  "version": "1.0.0",
+  "description": "巨量千川 / 实时大屏 / 任意网页 ROI 秒级监控，突破上下限立即推送至企业微信、个人微信(PushPlus)、飞书、钉钉、Bark 及桌面弹窗。",
+  "permissions": [
+    "storage",
+    "notifications",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://qianchuan.jinritemai.com/*",
+    "https://compass.jinritemai.com/*",
+    "https://ad.oceanengine.com/*",
+    "https://qyapi.weixin.qq.com/*",
+    "https://www.pushplus.plus/*",
+    "https://oapi.dingtalk.com/*",
+    "https://open.feishu.cn/*",
+    "https://api.day.app/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "打开/收起 ROI 实时监控面板",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://qianchuan.jinritemai.com/*",
+        "https://compass.jinritemai.com/*",
+        "https://ad.oceanengine.com/*",
+        "file:///*demo.html"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
