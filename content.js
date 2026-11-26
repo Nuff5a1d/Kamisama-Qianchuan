@@ -7,20 +7,35 @@
   window.__QC_ROI_MONITOR_LOADED__ = true;
 
   const STORAGE_KEY = "qc_roi_monitor_config_v1";
+  const CHANNELS_STORAGE_KEY = "qc_roi_monitor_channels_v1";
+  const CHANNELS_BACKUP_KEY = "qc_roi_monitor_channels_backup_v1";
+  const CHANNEL_STRING_FIELDS = ["wecomWebhook", "wecomMobiles", "pushplusToken", "customWebhook", "barkUrl"];
+  const CHANNEL_BOOL_FIELDS = ["desktopEnabled", "soundEnabled", "pushOnLow", "pushOnHigh", "pushOnCost", "pushOnExpired"];
   const PREV_DEFAULT_ROI_KEYWORD = "整体支付ROI,直接支付ROI,支付ROI,ROI";
+  const PREV_DEFAULT_NAME_KEYWORDS = ["计划", "计划,商品信息,商品,直播间", "计划,任务名称,商品信息,商品,直播间,任务"];
   const DEFAULT_CONFIG = {
     enabled: false,
     mode: "both", // "both" | "single" | "table"
     selector: "",
     selectorLabel: "",
     pageBindings: {}, // { [origin+pathname]: { selector, label } }
-    roiHeaderKeyword: "综合营销ROI,整体支付ROI,直接支付ROI,支付ROI,ROI",
-    costHeaderKeyword: "整体消耗,消耗",
-    nameHeaderKeyword: "计划",
+    roiHeaderKeyword: "调控综合营销ROI,综合营销ROI,整体支付ROI,直接支付ROI,支付ROI,ROI",
+    costHeaderKeyword: "调控消耗,整体消耗,消耗",
+    nameHeaderKeyword: "计划,任务名称,抖音号,商品信息,商品,直播间,任务",
     minCost: 100,
-    onlyDelivering: false,
+    onlyDelivering: true,
+    onlyRegulating: true,
+    highlightAbnormalRows: true,
+    markExpiredGuarantee: true,
+    abnormalSort: "table", // "table" | "extreme"
+    abnormalFilter: "all", // "all" | "low" | "high" | "cost" | "expired"
+    compactMode: false,
     lowerLimit: "1.5",
     upperLimit: "4.0",
+    costAlertEnabled: true,
+    budgetWarnPercent: "80",
+    overallCostLimit: "",
+    singleCostLimit: "",
     cooldownMinutes: 10,
     autoClickRefresh: false,
     refreshIntervalSec: 60,
@@ -28,18 +43,29 @@
     staleMinutes: 15,
     soundEnabled: true,
     desktopEnabled: true,
+    pushOnLow: true,
+    pushOnHigh: true,
+    pushOnCost: true,
+    pushOnExpired: false,
     wecomWebhook: "",
     wecomMobiles: "",
     pushplusToken: "",
     customWebhook: "",
     barkUrl: "",
+    channelHistory: {
+      wecomWebhook: [],
+      wecomMobiles: [],
+      pushplusToken: [],
+      customWebhook: [],
+      barkUrl: [],
+    },
   };
 
   const ROI_EXCLUDE_RE = /(目标|出价|设置|预期|建议|保本|门槛|最低)/i;
-  const ROI_PREFER_RE = /(综合营销|整体支付|直接支付|直播间支付|直播间成交|支付roi|成交roi|整体roi|全场roi|当日roi|实时roi)/i;
+  const ROI_PREFER_RE = /(调控综合营销|综合营销|整体支付|直接支付|直播间支付|直播间成交|调控净成交|支付roi|成交roi|整体roi|全场roi|当日roi|实时roi)/i;
   const COST_EXCLUDE_RE = /(成本|预算|出价|门槛|补贴|评分|roi)/i;
-  const NAME_EXCLUDE_RE = /(状态|设置|操作|工具|类型|方式|时段|时间|出价|预算|消耗|roi|订单|金额|成本|补贴|评分)/i;
-  const SUMMARY_ROW_TEXT_RE = /^(合计|总计|汇总|小计|全部合计|当前页合计|筛选合计|总览|共\s*\d+\s*条)/;
+  const NAME_EXCLUDE_RE = /(状态|设置|操作|工具|类型|方式|时段|时间|出价|预算|消耗|roi|订单|金额|成本|补贴|评分|素材)/i;
+  const SUMMARY_ROW_TEXT_RE = /^(合计|总计|汇总|小计|全部合计|当前页合计|筛选合计|总览|共\s*\d+\s*(条计划|条广告|条任务|条记录|条数据|个商品|个计划|个抖音号|个|项|场)\s*$)/;
   const SUMMARY_ROW_CLASS_RE = /(measure-row|placeholder|empty|summary|ovui-t-summary|total-row|tfoot|sticky-summary)/i;
   const TABLE_HEADER_PEER_RE = /(计划|消耗|roi|订单|成交|状态|操作|金额|成本|预算|商品|直播|创意|广告)/i;
 
@@ -47,7 +73,18 @@
   const PAGE_ERROR_RE = /(系统异常|网络异常|服务异常|请求失败|加载失败|数据加载异常|页面加载失败|暂无权限|无权访问|访问受限|系统繁忙，请稍后|服务开小差|接口异常|页面崩溃|502 Bad Gateway|504 Gateway|500 Internal)/;
   const ANNOUNCEMENT_IGNORE_RE = /(尊敬的客户|平台公告|温馨提示|系统通知|升级公告)/;
 
-  let config = { ...DEFAULT_CONFIG };
+  let config = {
+    ...DEFAULT_CONFIG,
+    channelHistory: {
+      wecomWebhook: [],
+      wecomMobiles: [],
+      pushplusToken: [],
+      customWebhook: [],
+      barkUrl: [],
+    },
+  };
+  let isConfigHydrated = false;
+  let lastChannelsUpdatedAt = 0;
   let isExpanded = false;
   let isPicking = false;
   let hoveredEl = null;
@@ -61,6 +98,294 @@
     text: "未启动",
     rowsSummary: "",
   };
+  let latestAbnormalItems = [];
+  let allAbnormalItems = [];
+  let activeAbnormalId = "";
+  const highlightedRowEls = new Set();
+  const highlightedCellEls = new Set();
+  const highlightedCostCellEls = new Set();
+  const highlightedStatusCellEls = new Set();
+  const activeFocusedRowEls = new Set();
+
+  // 注入主页面异常计划高亮样式（使用纯 CSS 属性与 ::after 伪元素，不改动页面原有子节点，不触发 React/MutationObserver 循环）
+  function ensurePageHighlightStyle() {
+    if (document.getElementById("qc-roi-monitor-page-style")) return;
+    const s = document.createElement("style");
+    s.id = "qc-roi-monitor-page-style";
+    s.textContent = `
+      [data-qc-roi-row="low"], [data-qc-roi-row="low"] > td {
+        background-color: rgba(239, 68, 68, 0.11) !important;
+      }
+      [data-qc-roi-row="low"] > td:first-child,
+      [data-qc-roi-row="low"]:not(tr) {
+        box-shadow: inset 4px 0 0 #ef4444 !important;
+      }
+      [data-qc-roi-row="high"], [data-qc-roi-row="high"] > td {
+        background-color: rgba(245, 158, 11, 0.13) !important;
+      }
+      [data-qc-roi-row="high"] > td:first-child,
+      [data-qc-roi-row="high"]:not(tr) {
+        box-shadow: inset 4px 0 0 #f59e0b !important;
+      }
+      [data-qc-roi-cell="low"] {
+        background-color: rgba(239, 68, 68, 0.19) !important;
+        box-shadow: inset 0 0 0 1.5px #ef4444 !important;
+      }
+      [data-qc-roi-cell="high"] {
+        background-color: rgba(245, 158, 11, 0.22) !important;
+        box-shadow: inset 0 0 0 1.5px #f59e0b !important;
+      }
+      [data-qc-roi-cell]::after {
+        content: attr(data-qc-roi-badge);
+        display: block;
+        width: fit-content;
+        margin-top: 4px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.45;
+        white-space: nowrap;
+      }
+      [data-qc-roi-cell="low"]::after {
+        background: #ef4444;
+        color: #ffffff;
+      }
+      [data-qc-roi-cell="high"]::after {
+        background: #f59e0b;
+        color: #111827;
+      }
+      [data-qc-roi-row="cost_warn"], [data-qc-roi-row="cost_warn"] > td {
+        background-color: rgba(168, 85, 247, 0.11) !important;
+      }
+      [data-qc-roi-row="cost_warn"] > td:first-child,
+      [data-qc-roi-row="cost_warn"]:not(tr) {
+        box-shadow: inset 4px 0 0 #a855f7 !important;
+      }
+      [data-qc-roi-row="cost_hit"], [data-qc-roi-row="cost_hit"] > td {
+        background-color: rgba(225, 29, 72, 0.13) !important;
+      }
+      [data-qc-roi-row="cost_hit"] > td:first-child,
+      [data-qc-roi-row="cost_hit"]:not(tr) {
+        box-shadow: inset 4px 0 0 #e11d48 !important;
+      }
+      [data-qc-cost-cell="cost_warn"] {
+        background-color: rgba(168, 85, 247, 0.19) !important;
+        box-shadow: inset 0 0 0 1.5px #a855f7 !important;
+      }
+      [data-qc-cost-cell="cost_hit"] {
+        background-color: rgba(225, 29, 72, 0.22) !important;
+        box-shadow: inset 0 0 0 1.5px #e11d48 !important;
+      }
+      [data-qc-cost-cell]::after {
+        content: attr(data-qc-cost-badge);
+        display: block;
+        width: fit-content;
+        margin-top: 4px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.45;
+        white-space: nowrap;
+      }
+      [data-qc-cost-cell="cost_warn"]::after {
+        background: #9333ea;
+        color: #ffffff;
+      }
+      [data-qc-cost-cell="cost_hit"]::after {
+        background: #e11d48;
+        color: #ffffff;
+      }
+      [data-qc-roi-row="expired"], [data-qc-roi-row="expired"] > td {
+        background-color: rgba(250, 204, 21, 0.16) !important;
+      }
+      [data-qc-roi-row="expired"] > td:first-child,
+      [data-qc-roi-row="expired"]:not(tr) {
+        box-shadow: inset 4px 0 0 #eab308 !important;
+      }
+      [data-qc-status-cell="expired"] {
+        background-color: rgba(250, 204, 21, 0.24) !important;
+        box-shadow: inset 0 0 0 1.5px #eab308 !important;
+      }
+      [data-qc-status-cell]::after {
+        content: attr(data-qc-status-badge);
+        display: block;
+        width: fit-content;
+        margin-top: 4px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.45;
+        white-space: nowrap;
+        background: #facc15;
+        color: #422006;
+      }
+      [data-qc-roi-active="1"], [data-qc-roi-active="1"] > td {
+        box-shadow: inset 0 2px 0 #3b82f6, inset 0 -2px 0 #3b82f6 !important;
+      }
+      [data-qc-roi-active="1"] > td:first-child,
+      [data-qc-roi-active="1"]:not(tr) {
+        box-shadow: inset 5px 0 0 #2563eb, inset 0 2px 0 #3b82f6, inset 0 -2px 0 #3b82f6 !important;
+      }
+      @keyframes qcRoiFlashPulse {
+        0% { outline: 3px solid #3b82f6; outline-offset: -2px; }
+        50% { outline: 3px solid #93c5fd; outline-offset: -2px; }
+        100% { outline: 3px solid transparent; outline-offset: -2px; }
+      }
+      [data-qc-roi-flash="1"] {
+        animation: qcRoiFlashPulse 1.0s ease-out 2 !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(s);
+  }
+
+  function clearActiveRowFocus() {
+    for (const el of activeFocusedRowEls) {
+      if (el && el.removeAttribute) {
+        el.removeAttribute("data-qc-roi-active");
+      }
+    }
+    activeFocusedRowEls.clear();
+  }
+
+  function clearPageHighlights() {
+    clearActiveRowFocus();
+    for (const el of highlightedRowEls) {
+      if (el && el.removeAttribute) {
+        el.removeAttribute("data-qc-roi-row");
+      }
+    }
+    highlightedRowEls.clear();
+    for (const cell of highlightedCellEls) {
+      if (cell && cell.removeAttribute) {
+        cell.removeAttribute("data-qc-roi-cell");
+        cell.removeAttribute("data-qc-roi-badge");
+      }
+    }
+    highlightedCellEls.clear();
+    for (const cell of highlightedCostCellEls) {
+      if (cell && cell.removeAttribute) {
+        cell.removeAttribute("data-qc-cost-cell");
+        cell.removeAttribute("data-qc-cost-badge");
+      }
+    }
+    highlightedCostCellEls.clear();
+    for (const cell of highlightedStatusCellEls) {
+      if (cell && cell.removeAttribute) {
+        cell.removeAttribute("data-qc-status-cell");
+        cell.removeAttribute("data-qc-status-badge");
+      }
+    }
+    highlightedStatusCellEls.clear();
+  }
+
+  function applyPageHighlights(abnormalItems) {
+    if (!config.enabled || !config.highlightAbnormalRows || abnormalItems.length === 0) {
+      clearPageHighlights();
+      return;
+    }
+    ensurePageHighlightStyle();
+
+    const rowPriority = { low: 5, cost_hit: 4, cost_warn: 3, expired: 2, high: 1 };
+    const nextRows = new Map();
+    const nextRoiCells = new Map();
+    const nextCostCells = new Map();
+    const nextStatusCells = new Map();
+
+    for (const item of abnormalItems) {
+      for (const rEl of item.rowEls || []) {
+        if (rEl && rEl.setAttribute) {
+          const prev = nextRows.get(rEl);
+          if (!prev || (rowPriority[item.direction] || 0) > (rowPriority[prev] || 0)) {
+            nextRows.set(rEl, item.direction);
+          }
+        }
+      }
+      if (item.direction === "cost_warn" || item.direction === "cost_hit") {
+        if (item.costCell && item.costCell.setAttribute) {
+          const pctStr = Number.isFinite(item.budgetPct) ? `${item.budgetPct.toFixed(0)}%` : "";
+          const badge = item.direction === "cost_hit" ? `🚨已撞预算${pctStr}` : `⚡快撞预算${pctStr}`;
+          nextCostCells.set(item.costCell, { direction: item.direction, badge });
+        }
+      } else if (item.direction === "expired") {
+        if (item.statusCell && item.statusCell.setAttribute) {
+          nextStatusCells.set(item.statusCell, { direction: "expired", badge: "⚠️已过保" });
+        }
+      } else if (item.roiCell && item.roiCell.setAttribute) {
+        const badge =
+          item.direction === "low"
+            ? `↓跌破下限(<${item.threshold})`
+            : `↑突破上限(>${item.threshold})`;
+        nextRoiCells.set(item.roiCell, { direction: item.direction, badge });
+      }
+    }
+
+    for (const el of Array.from(highlightedRowEls)) {
+      if (!nextRows.has(el)) {
+        el.removeAttribute("data-qc-roi-row");
+        highlightedRowEls.delete(el);
+      }
+    }
+    for (const [el, dir] of nextRows.entries()) {
+      if (el.getAttribute("data-qc-roi-row") !== dir) {
+        el.setAttribute("data-qc-roi-row", dir);
+      }
+      highlightedRowEls.add(el);
+    }
+
+    for (const cell of Array.from(highlightedCellEls)) {
+      if (!nextRoiCells.has(cell)) {
+        cell.removeAttribute("data-qc-roi-cell");
+        cell.removeAttribute("data-qc-roi-badge");
+        highlightedCellEls.delete(cell);
+      }
+    }
+    for (const [cell, info] of nextRoiCells.entries()) {
+      if (cell.getAttribute("data-qc-roi-cell") !== info.direction) {
+        cell.setAttribute("data-qc-roi-cell", info.direction);
+      }
+      if (cell.getAttribute("data-qc-roi-badge") !== info.badge) {
+        cell.setAttribute("data-qc-roi-badge", info.badge);
+      }
+      highlightedCellEls.add(cell);
+    }
+
+    for (const cell of Array.from(highlightedCostCellEls)) {
+      if (!nextCostCells.has(cell)) {
+        cell.removeAttribute("data-qc-cost-cell");
+        cell.removeAttribute("data-qc-cost-badge");
+        highlightedCostCellEls.delete(cell);
+      }
+    }
+    for (const [cell, info] of nextCostCells.entries()) {
+      if (cell.getAttribute("data-qc-cost-cell") !== info.direction) {
+        cell.setAttribute("data-qc-cost-cell", info.direction);
+      }
+      if (cell.getAttribute("data-qc-cost-badge") !== info.badge) {
+        cell.setAttribute("data-qc-cost-badge", info.badge);
+      }
+      highlightedCostCellEls.add(cell);
+    }
+
+    for (const cell of Array.from(highlightedStatusCellEls)) {
+      if (!nextStatusCells.has(cell)) {
+        cell.removeAttribute("data-qc-status-cell");
+        cell.removeAttribute("data-qc-status-badge");
+        highlightedStatusCellEls.delete(cell);
+      }
+    }
+    for (const [cell, info] of nextStatusCells.entries()) {
+      if (cell.getAttribute("data-qc-status-cell") !== info.direction) {
+        cell.setAttribute("data-qc-status-cell", info.direction);
+      }
+      if (cell.getAttribute("data-qc-status-badge") !== info.badge) {
+        cell.setAttribute("data-qc-status-badge", info.badge);
+      }
+      highlightedStatusCellEls.add(cell);
+    }
+  }
 
   // 页面健康与断流追踪状态
   const healthState = {
@@ -108,15 +433,19 @@
       border: 1px solid #2b3347; border-radius: 14px;
       box-shadow: 0 16px 40px rgba(0,0,0,0.45);
       font-size: 12px; line-height: 1.45;
-      display: none;
+      display: none; position: relative;
     }
     .panel.open { display: block; }
+    .panel.compact .config-section { display: none !important; }
+    .panel.compact .abnormal-list { max-height: 420px; }
     .header {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 12px 14px; border-bottom: 1px solid #242b3d;
+      display: flex; align-items: center; justify-content: space-between; gap: 6px;
+      padding: 11px 13px; border-bottom: 1px solid #242b3d;
       background: #1a1f2e; border-radius: 14px 14px 0 0;
-      position: sticky; top: 0; z-index: 2;
+      position: sticky; top: 0; z-index: 4;
+      cursor: move; user-select: none;
     }
+    .header-actions { display: flex; align-items: center; gap: 5px; }
     .title { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
     .version-tag {
       font-size: 10px; font-weight: 600; color: #93c5fd;
@@ -193,11 +522,95 @@
     .log-item.low, .log-item.error { border-left-color: #ef4444; }
     .log-item.high, .log-item.warn { border-left-color: #f59e0b; }
     .log-item.ok { border-left-color: #22c55e; }
+    .abnormal-box {
+      background: #181d2b; border: 1px solid #3c2630; border-radius: 10px;
+      padding: 9px 11px; display: none; flex-direction: column; gap: 7px;
+    }
+    .abnormal-box.show { display: flex; }
+    .abnormal-toolbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap;
+    }
+    .mini-pills { display: flex; align-items: center; gap: 4px; }
+    .mini-pill {
+      background: #1f2638; color: #9aa7c2; border: 1px solid #2d364d;
+      border-radius: 999px; padding: 2px 7px; font-size: 10.5px; font-weight: 600;
+      cursor: pointer; user-select: none;
+    }
+    .mini-pill:hover { border-color: #4f7cff; color: #e2e8f0; }
+    .mini-pill.active { background: #263961; color: #fff; border-color: #4f7cff; }
+    .mini-pill.low.active { background: #7f1d1d; border-color: #ef4444; color: #fff; }
+    .mini-pill.high.active { background: #78350f; border-color: #f59e0b; color: #fef3c7; }
+    .mini-pill.cost.active { background: #581c87; border-color: #a855f7; color: #f3e8ff; }
+    .mini-pill.expired.active { background: #713f12; border-color: #eab308; color: #fef08a; }
+    .stepper-bar {
+      display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    }
+    .stepper-btns { display: flex; align-items: center; gap: 5px; }
+    .step-btn {
+      background: #222b40; color: #dbeafe; border: 1px solid #334366;
+      border-radius: 6px; padding: 3px 8px; font-size: 11px; font-weight: 600; cursor: pointer;
+    }
+    .step-btn:hover { background: #2d3b59; border-color: #60a5fa; }
+    .step-pos { font-size: 11px; color: #94a3b8; font-variant-numeric: tabular-nums; }
+    .abnormal-list {
+      max-height: 176px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px;
+    }
+    .abnormal-item {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      background: #10141f; border: 1px solid #262f45; border-left: 3px solid #ef4444;
+      border-radius: 6px; padding: 6px 8px; cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .abnormal-item:hover { background: #1a2236; border-color: #4f7cff; }
+    .abnormal-item.high { border-left-color: #f59e0b; }
+    .abnormal-item.cost_warn { border-left-color: #a855f7; }
+    .abnormal-item.cost_hit { border-left-color: #e11d48; }
+    .abnormal-item.expired { border-left-color: #eab308; }
+    .abnormal-item.active {
+      background: #1a2742; border-color: #3b82f6;
+      box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.45);
+    }
+    .row-seq {
+      font-size: 10px; font-weight: 700; color: #93c5fd;
+      background: #1a243b; border-radius: 4px; padding: 1px 4px; margin-right: 4px;
+    }
+    .abnormal-main { min-width: 0; flex: 1; }
+    .abnormal-name {
+      color: #f1f5f9; font-weight: 600; font-size: 11.5px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .abnormal-meta { color: #94a3b8; font-size: 10.5px; margin-top: 2px; }
+    .tag-pill {
+      font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 999px; flex-shrink: 0;
+    }
+    .tag-pill.low { background: #ef4444; color: #fff; }
+    .tag-pill.high { background: #f59e0b; color: #111827; }
+    .tag-pill.cost_warn { background: #9333ea; color: #fff; }
+    .tag-pill.cost_hit { background: #e11d48; color: #fff; }
+    .tag-pill.expired { background: #facc15; color: #422006; }
     .toast {
-      font-size: 11px; color: #fde68a; background: #2c2614;
-      border: 1px solid #594a1f; border-radius: 6px; padding: 6px 8px; display: none;
+      position: sticky; bottom: 8px; z-index: 6; margin: 0 14px 8px;
+      font-size: 11px; color: #fde68a; background: rgba(44, 38, 20, 0.96);
+      border: 1px solid #786227; border-radius: 8px; padding: 7px 10px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.45); display: none;
     }
     .toast.show { display: block; }
+    .save-status {
+      font-size: 10.5px; color: #4ade80; background: rgba(22, 163, 74, 0.14);
+      border: 1px solid rgba(34, 197, 94, 0.35); border-radius: 6px; padding: 4px 8px;
+    }
+    .save-status.warn {
+      color: #fde68a; background: rgba(234, 179, 8, 0.12); border-color: rgba(234, 179, 8, 0.35);
+    }
+    .input-with-btn { display: flex; align-items: center; gap: 5px; }
+    .input-with-btn input { flex: 1; min-width: 0; }
+    .history-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+    .history-chip {
+      max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 10px; color: #bfdbfe; background: #172136; border: 1px solid #2b3f66;
+      border-radius: 999px; padding: 1px 7px; cursor: pointer;
+    }
+    .history-chip:hover { border-color: #60a5fa; color: #fff; }
+    .history-chip.active { background: #1e3a5f; border-color: #3b82f6; color: #fff; }
   `;
   shadow.appendChild(style);
 
@@ -209,13 +622,16 @@
     </div>
 
     <div class="panel" id="panel">
-      <div class="header">
+      <div class="header" id="panelHeader" title="按住标题栏可拖动面板位置">
         <div class="title">
           <span class="dot" id="headerDot"></span>
           <span>千川 ROI 实时监控</span>
-          <span class="version-tag">v1.1.3</span>
+          <span class="version-tag">v1.2.0</span>
         </div>
-        <button class="icon-btn" id="collapseBtn">收起</button>
+        <div class="header-actions">
+          <button class="icon-btn" id="compactModeBtn" title="折叠下方配置区，专注巡检异常计划">极简</button>
+          <button class="icon-btn" id="collapseBtn">收起</button>
+        </div>
       </div>
 
       <div class="body">
@@ -227,10 +643,37 @@
           <button class="btn btn-success" id="toggleMonitorBtn">开始监控</button>
         </div>
 
-        <div class="toast" id="toastBox"></div>
+        <!-- 异常计划明细（默认严格按表格从上到下顺序排列，支持上一条/下一条与类型筛选） -->
+        <div class="abnormal-box" id="abnormalBox">
+          <div class="section-title">
+            <span id="abnormalBoxTitle">异常计划明细</span>
+            <label class="check-row" style="font-size:11px;font-weight:500;">
+              <input type="checkbox" id="highlightAbnormalRows">
+              <span>表格高亮</span>
+            </label>
+          </div>
+          <div class="abnormal-toolbar">
+            <div class="mini-pills" id="abnormalFilterGroup" style="flex-wrap:wrap;">
+              <span class="mini-pill active" data-filter="all" id="filterAllPill">全部</span>
+              <span class="mini-pill low" data-filter="low" id="filterLowPill">跌破</span>
+              <span class="mini-pill high" data-filter="high" id="filterHighPill">突破</span>
+              <span class="mini-pill cost" data-filter="cost" id="filterCostPill">撞墙</span>
+              <span class="mini-pill expired" data-filter="expired" id="filterExpiredPill">过保</span>
+            </div>
+            <span class="mini-pill" id="sortOrderToggle" title="切换按表格从上到下顺序 / 按ROI极值排序">顺序：表格</span>
+          </div>
+          <div class="stepper-bar">
+            <div class="stepper-btns">
+              <button class="step-btn" id="prevAbnormalBtn">◀ 上一条</button>
+              <button class="step-btn" id="nextAbnormalBtn">下一条 ▶</button>
+            </div>
+            <span class="step-pos" id="abnormalStepPos">未选中</span>
+          </div>
+          <div class="abnormal-list" id="abnormalList"></div>
+        </div>
 
         <!-- 监控模式 -->
-        <div class="section">
+        <div class="section config-section">
           <div class="section-title">
             <span>1. 监控对象（实时读取）</span>
             <button class="btn btn-ghost btn-sm" id="copyDiagBtn" title="复制页面表格结构诊断JSON（不含Cookie/Token）">复制诊断</button>
@@ -269,10 +712,14 @@
                 <input type="number" min="15" step="5" id="refreshIntervalSec" placeholder="60">
               </label>
             </div>
-            <div class="row-between">
+            <div class="row-between" style="flex-wrap:wrap;gap:6px;">
               <label class="check-row">
                 <input type="checkbox" id="onlyDelivering">
-                <span>仅监控“投放中”计划</span>
+                <span>仅“投放中”</span>
+              </label>
+              <label class="check-row">
+                <input type="checkbox" id="onlyRegulating">
+                <span>仅“调控中”</span>
               </label>
               <label class="check-row">
                 <input type="checkbox" id="autoClickRefresh">
@@ -284,19 +731,41 @@
         </div>
 
         <!-- 上下限阈值与页面异常提醒 -->
-        <div class="section">
-          <div class="section-title"><span>2. 告警阈值 & 页面异常提醒</span></div>
+        <div class="section config-section">
+          <div class="section-title"><span>2. ROI 阈值 · 消耗撞线 · 页面异常</span></div>
           <div class="grid-3">
-            <label class="field">下限值(跌破提醒)
+            <label class="field">ROI下限(跌破)
               <input type="number" step="0.01" id="lowerLimit" placeholder="如 1.5">
             </label>
-            <label class="field">上限值(突破提醒)
+            <label class="field">ROI上限(突破)
               <input type="number" step="0.01" id="upperLimit" placeholder="如 4.0">
             </label>
             <label class="field">冷却(分钟)
               <input type="number" min="0" step="1" id="cooldownMinutes" placeholder="10">
             </label>
           </div>
+          <div class="row-between" style="flex-wrap:wrap;gap:6px;margin-top:2px;">
+            <label class="check-row">
+              <input type="checkbox" id="costAlertEnabled">
+              <span>预算撞墙提醒（快赶上预算提醒加预算）</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="markExpiredGuarantee">
+              <span>黄色标记过保计划（防跑偏/跑飞）</span>
+            </label>
+          </div>
+          <div class="grid-3">
+            <label class="field">撞墙预警比例(%)
+              <input type="number" min="10" max="100" step="5" id="budgetWarnPercent" placeholder="80">
+            </label>
+            <label class="field">整体消耗上限(元)
+              <input type="number" min="0" step="100" id="overallCostLimit" placeholder="留空不限">
+            </label>
+            <label class="field">单计划上限(元)
+              <input type="number" min="0" step="50" id="singleCostLimit" placeholder="留空读预算">
+            </label>
+          </div>
+          <div class="muted" id="overallCostStatus">整体消耗撞线：自动监测表格预算（设整体上限可同步盯全店消耗）</div>
           <div class="grid-2">
             <label class="check-row">
               <input type="checkbox" id="anomalyAlertEnabled">
@@ -320,25 +789,60 @@
         </div>
 
         <!-- 手机微信推送 -->
-        <div class="section">
+        <div class="section config-section">
           <div class="section-title">
-            <span>3. 手机微信 / 群推送配置</span>
-            <button class="btn btn-ghost btn-sm" id="testPushBtn">发送测试推送</button>
+            <span>3. 5大推送渠道（自动持久化记住）</span>
+            <div style="display:flex;gap:5px;">
+              <button class="btn btn-primary btn-sm" id="savePushBtn">立即保存</button>
+              <button class="btn btn-ghost btn-sm" id="testPushBtn">测试推送</button>
+            </div>
+          </div>
+          <div class="save-status" id="pushSaveStatus">正在读取已保存的推送配置...</div>
+          <div class="row-between" style="flex-wrap:wrap;gap:6px;padding:2px 0;">
+            <label class="check-row">
+              <input type="checkbox" id="pushOnLow">
+              <span>跌破推</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="pushOnHigh">
+              <span>突破推</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="pushOnCost">
+              <span>撞墙推</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="pushOnExpired">
+              <span>过保推</span>
+            </label>
           </div>
           <label class="field">企业微信群机器人 Webhook（推荐：免费不限量，微信可直收）
-            <input type="text" id="wecomWebhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...">
+            <input type="text" id="wecomWebhook" list="list_wecomWebhook" autocomplete="off" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...">
+            <datalist id="list_wecomWebhook"></datalist>
+            <div class="history-chips" id="chips_wecomWebhook"></div>
           </label>
           <label class="field">企微 @手机号（可选，填 @all 则提醒所有人，多个用逗号隔开）
-            <input type="text" id="wecomMobiles" placeholder="如 13800138000 或 @all">
+            <input type="text" id="wecomMobiles" list="list_wecomMobiles" autocomplete="off" placeholder="如 13800138000 或 @all">
+            <datalist id="list_wecomMobiles"></datalist>
+            <div class="history-chips" id="chips_wecomMobiles"></div>
           </label>
           <label class="field">PushPlus Token（直达个人微信，免费 200 条/天，需实名）
-            <input type="password" id="pushplusToken" placeholder="粘贴 PushPlus token">
+            <div class="input-with-btn">
+              <input type="password" id="pushplusToken" list="list_pushplusToken" autocomplete="off" placeholder="粘贴 PushPlus token">
+              <button class="btn btn-ghost btn-sm" id="togglePushplusVisBtn" type="button" title="显示或隐藏 Token">显示</button>
+            </div>
+            <datalist id="list_pushplusToken"></datalist>
+            <div class="history-chips" id="chips_pushplusToken"></div>
           </label>
           <label class="field">飞书 / 钉钉群机器人 Webhook（可选）
-            <input type="text" id="customWebhook" placeholder="https://open.feishu.cn/... 或 https://oapi.dingtalk.com/...">
+            <input type="text" id="customWebhook" list="list_customWebhook" autocomplete="off" placeholder="https://open.feishu.cn/... 或 https://oapi.dingtalk.com/...">
+            <datalist id="list_customWebhook"></datalist>
+            <div class="history-chips" id="chips_customWebhook"></div>
           </label>
           <label class="field">Bark 推送地址（仅 iPhone，免费不限量，可选）
-            <input type="text" id="barkUrl" placeholder="https://api.day.app/你的Key">
+            <input type="text" id="barkUrl" list="list_barkUrl" autocomplete="off" placeholder="https://api.day.app/你的Key">
+            <datalist id="list_barkUrl"></datalist>
+            <div class="history-chips" id="chips_barkUrl"></div>
           </label>
         </div>
 
@@ -353,6 +857,7 @@
           </div>
         </div>
       </div>
+      <div class="toast" id="toastBox"></div>
     </div>
   `;
   shadow.appendChild(root);
@@ -507,7 +1012,8 @@
     if (map[key] && map[key].selector) {
       return map[key];
     }
-    if (config.selector) {
+    // 仅在尚未建立任何按页绑定时兼容旧版全局 selector，防止 /overall-prom 的选择器串到 /overall-prom/detail 等无指标卡页面
+    if (Object.keys(map).length === 0 && config.selector) {
       return { selector: config.selector, label: config.selectorLabel || "" };
     }
     return { selector: "", label: "" };
@@ -540,22 +1046,33 @@
       return compact;
     }
 
-    // 兼容整数 + 小数 + 涨跌幅(如 "-0.21%") 同处一个容器的布局，提取前置完整数字
-    if (el.children && el.children.length >= 2 && el.children.length <= 8) {
+    // 兼容千川乘方 Aurora 指标卡（如 "11.02\n-3.08%"）及整数 + 小数 + 涨跌幅同容器布局
+    const innerLines = String(el.innerText || "")
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (innerLines.length >= 2 && /%/.test(innerLines[innerLines.length - 1])) {
+      const firstLineClean = innerLines[0].replace(/[\s,，￥¥]/g, "");
+      if (/^-?\d+(?:\.\d+)?$/.test(firstLineClean)) {
+        return firstLineClean;
+      }
+    }
+
+    if (el.childNodes && el.childNodes.length >= 2 && el.childNodes.length <= 10) {
       let acc = "";
       for (const child of Array.from(el.childNodes)) {
         if (child.nodeType === 1 && !isVisible(child)) continue;
+        if (child.nodeType === 1) {
+          const cls = typeof child.className === "string" ? child.className : "";
+          if (/(trend|rate|ratio|percent|compare|comparison|diff|change|sub)/i.test(cls) && acc) {
+            break;
+          }
+        }
         const part = String(child.textContent || "").replace(/\s+/g, "");
         if (!part) continue;
         if (/%/.test(part) || /[^\d.,，￥¥-]/.test(part)) {
           if (acc) break;
           continue;
-        }
-        if (child.nodeType === 1) {
-          const cls = typeof child.className === "string" ? child.className : "";
-          if (/(trend|rate|ratio|percent|compare|diff|change|sub)/i.test(cls) && acc) {
-            break;
-          }
         }
         const candidate = (acc + part).replace(/[,，￥¥]/g, "");
         if (/^-?\d*\.?\d*$/.test(candidate)) {
@@ -609,17 +1126,21 @@
       if (pure === matchedKw || compact === matchedKw) score += 100;
 
       if (type === "roi") {
-        if (/综合营销roi|整体支付roi/.test(pure)) score += 90;
-        else if (/直接支付roi|直播间支付roi|直播间成交roi/.test(pure)) score += 75;
+        if (/调控综合营销roi|综合营销roi|整体支付roi/.test(pure)) score += 90;
+        else if (/直接支付roi|直播间支付roi|直播间成交roi|调控净成交roi/.test(pure)) score += 75;
         else if (/支付roi|成交roi|全场roi/.test(pure)) score += 55;
         else if (ROI_PREFER_RE.test(pure)) score += 30;
       } else if (type === "cost") {
-        if (/整体消耗|总消耗|消耗/.test(pure)) score += 50;
+        if (/调控消耗|整体消耗|总消耗|消耗/.test(pure)) score += 50;
       } else if (type === "name") {
-        if (/^(计划|计划名称|广告计划|推广计划|商品|商品名称|名称)$/.test(pure)) score += 70;
-        else if (/名称/.test(pure)) score += 40;
+        if (/^(计划|计划名称|任务名称|调控任务|抖音号|广告计划|推广计划|商品信息|商品|商品名称|直播间|名称)$/.test(pure)) score += 70;
+        else if (/名称|信息|任务/.test(pure)) score += 40;
       } else if (type === "status") {
-        if (/^(计划状态|投放状态|状态)$/.test(pure)) score += 80;
+        if (/^(调控状态|计划状态|投放状态|商品状态|状态)$/.test(pure)) score += 80;
+      } else if (type === "budget") {
+        if (/^(调控预算|每日预算|日预算|计划预算|预算)$/.test(pure)) score += 80;
+      } else if (type === "settings") {
+        if (/^(投放设置|商品推广设置|推广设置|设置)$/.test(pure)) score += 80;
       }
 
       if (compact.length > 20) score -= 25;
@@ -648,10 +1169,10 @@
       ? firstCellsText
       : [normalizeText(rowEl.innerText || rowEl.textContent || "").slice(0, 60)];
 
-    for (const s of samples) {
-      const t = normalizeText(s);
-      if (!t) continue;
-      if (SUMMARY_ROW_TEXT_RE.test(t)) return true;
+    // 仅检查首个非空单元格，避免第 3 列「素材：共10条视频」等正常业务字段被误判为汇总行
+    const firstNonEmpty = samples.map((s) => normalizeText(s)).find(Boolean) || "";
+    if (firstNonEmpty && SUMMARY_ROW_TEXT_RE.test(firstNonEmpty)) {
+      return true;
     }
     return false;
   }
@@ -666,18 +1187,18 @@
       "";
     const planId = idMatch ? idMatch[1] : rowKeyAttr;
 
-    // 优先匹配千川全域推商品/直播间专用计划名节点（干净排除“扶持中/ID/商品/素材/升级乘方”等角标）
+    // 优先匹配千川全域推商品/直播间/乘方商品视图专用名称节点（干净排除“扶持中/商品自选/ID/商品/素材/升级乘方”等角标）
     let candidateName = "";
     if (nameCell && nameCell.querySelector) {
       const titleEl = nameCell.querySelector(
-        ".oc-promotion-product-adinfo-name, [class*='adinfo-name'], a[title], [class*='plan-name'], [class*='campaign-name'], [class*='name'][title], [class*='title'][title], a"
+        ".oc-promotion-product-adinfo-name, .oc-promotion-live-adinfo-pointer, [class*='adinfo-name'], [class^='name-'], [class*=' name-'], a[title], [class*='plan-name'], [class*='campaign-name'], [class*='name'][title], [class*='title'][title], a"
       );
       if (titleEl) {
         const t = normalizeText(titleEl.getAttribute("title") || titleEl.innerText || titleEl.textContent);
         if (
           t &&
           t.length >= 2 &&
-          !/^(扶持中|冷启动中|学习中|推商品|推直播间|商品卡|商品|素材|编辑|详情|升级乘方|ID[:：])/i.test(t)
+          !/^(扶持中|冷启动中|学习中|商品自选|推商品|推直播间|商品卡|商品|素材|编辑|详情|升级乘方|ID[:：])/i.test(t)
         ) {
           candidateName = t;
         }
@@ -718,6 +1239,134 @@
       .map((s) => s.trim())
       .filter(Boolean);
     return lines[0] || "";
+  }
+
+  function isCssGreenColor(colorStr) {
+    if (!colorStr || colorStr === "transparent" || colorStr === "none") return false;
+    const m = String(colorStr).match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/i);
+    if (!m) return false;
+    const r = Number(m[1]);
+    const g = Number(m[2]);
+    const b = Number(m[3]);
+    const a = m[4] !== undefined ? Number(m[4]) : 1;
+    if (a <= 0.05) return false;
+    return g > r + 15 && g > b + 10 && g >= 95;
+  }
+
+  // 识别状态单元格里的「保」赔付保障状态：
+  // "protected" = 绿色「保」（保障中）
+  // "expired"   = 灰色「保」或文字提示已过保/保障已结束（明确过保）
+  // "none"      = 无「保」徽标（老计划/未获保障/已过保）
+  function extractGuaranteeState(statusCell) {
+    if (!statusCell) return "unknown";
+    const fullText = normalizeText(statusCell.innerText || statusCell.textContent);
+    if (/(已过保|保障已结束|赔付已结束|保障失效|不保障)/.test(fullText)) {
+      return "expired";
+    }
+    const candidates = Array.from(statusCell.querySelectorAll("span, div, i, em, b, svg, [class*='tag'], [class*='badge'], [class*='compensat'], [class*='guarantee'], [class*='protect'], [class*='insur']"));
+    const baoNodes = candidates.filter((el) => {
+      if (!isVisible(el)) return false;
+      const t = normalizeText(el.innerText || el.textContent);
+      const title = normalizeText(el.getAttribute("title") || el.getAttribute("aria-label"));
+      const cls = typeof el.className === "string" ? el.className : "";
+      const hasBaoText = (t === "保" || (t.length <= 8 && /保/.test(t) && !/保护|保存|保证金/.test(t)));
+      const hasBaoHint = /赔付|保障/.test(title) || /(compensat|guarantee|baozhang|protect)/i.test(cls);
+      return hasBaoText || hasBaoHint;
+    });
+
+    if (baoNodes.length === 0) {
+      return "none";
+    }
+
+    // 任意一个「保」节点或其包裹容器/SVG 路径呈绿色，即判定为「保障中（绿保）」
+    for (const node of baoNodes) {
+      const checkChain = [node, node.parentElement, ...Array.from(node.querySelectorAll("svg, path, rect, circle")).slice(0, 6)].filter(Boolean);
+      for (const el of checkChain) {
+        const cls = typeof el.className === "string" ? el.className : "";
+        if (/(success|green|active-guarantee|in-guarantee|protecting)/i.test(cls) && !/(gray|grey|disabled|expired|inactive)/i.test(cls)) {
+          return "protected";
+        }
+        try {
+          const st = window.getComputedStyle(el);
+          if (
+            isCssGreenColor(st.color) ||
+            isCssGreenColor(st.backgroundColor) ||
+            isCssGreenColor(st.borderColor) ||
+            isCssGreenColor(st.fill) ||
+            isCssGreenColor(st.stroke)
+          ) {
+            return "protected";
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // 存在「保」图标但非绿色（即灰色「保」），判定为明确过保
+    return "expired";
+  }
+
+  // 自动提取单条计划/调控任务的预算金额（优先独立「调控预算/每日预算」列，其次从「投放设置」提取 "每日预算 3000元"）
+  function extractBudgetFromRow(budgetCell, settingsCell) {
+    if (budgetCell) {
+      const txt = normalizeText(budgetCell.innerText || budgetCell.textContent);
+      if (txt && !/不限/.test(txt)) {
+        const val = parseMetricNumber(txt);
+        if (val !== null && val > 0) return val;
+      }
+    }
+    if (settingsCell) {
+      const raw = String(settingsCell.innerText || settingsCell.textContent || "");
+      const m = raw.match(/(?:每日预算|日预算|调控预算|总预算|预算)\s*[:：¥￥]?\s*(\d+(?:,\d+)*(?:\.\d+)?)\s*(亿|万|w|W|千|k|K)?/);
+      if (m) {
+        let val = Number(m[1].replace(/,/g, ""));
+        if (Number.isFinite(val) && val > 0) {
+          const u = m[2] || "";
+          if (u === "亿") val *= 1e8;
+          else if (u === "万" || u === "w" || u === "W") val *= 1e4;
+          else if (u === "千" || u === "k" || u === "K") val *= 1e3;
+          return Math.round(val * 100) / 100;
+        }
+      }
+    }
+    return null;
+  }
+
+  // 自动查找顶部「整体消耗」指标卡（兼容千川乘方 Aurora / 全域推商品 / 推直播间）
+  function autoFindOverallCostElement() {
+    const direct = document.querySelector(".card.stat_cost .oc-promotion-metric-card-number");
+    if (direct && isVisible(direct)) {
+      const val = parseMetricNumber(readElementMetricText(direct));
+      if (val !== null) return { el: direct, label: "整体消耗", value: val };
+    }
+    const cards = Array.from(
+      document.querySelectorAll(
+        ".aurora-qc-statistic, .oc-promotion-metric-card, .oc-statistic, [class*='metricCardStatistic'], [class*='metric-card'], .card"
+      )
+    ).filter((c) => isVisible(c));
+    for (const card of cards) {
+      const rect = card.getBoundingClientRect();
+      if (rect.width > 640 || rect.height > 280) continue;
+      const titleEl = card.querySelector(
+        "[data-testid='metric-card-title-region'], .aurora-qc-statistic-title, .oc-statistic-title, .card-label, [class*='title']"
+      );
+      const titleTxt = normalizeText(titleEl?.getAttribute?.("title") || titleEl?.innerText || titleEl?.textContent);
+      if (!titleTxt || titleTxt.length > 20 || !/消耗/.test(titleTxt) || COST_EXCLUDE_RE.test(titleTxt)) continue;
+      const auroraRow = card.querySelector(".aurora-qc-statistic-value-row");
+      const auroraInner = card.querySelector(".aurora-qc-statistic-value-row > .aurora-qc-statistic-value-text");
+      const numBox =
+        (auroraInner && parseMetricNumber(readElementMetricText(auroraInner)) !== null ? auroraInner : null) ||
+        (auroraRow && parseMetricNumber(readElementMetricText(auroraRow)) !== null ? auroraRow : null) ||
+        card.querySelector(".oc-promotion-metric-card-number, .oc-statistic-content, .card-value") ||
+        findBestMetricElementInCard(card, titleEl);
+      if (!numBox || !isVisible(numBox)) continue;
+      const val = parseMetricNumber(readElementMetricText(numBox));
+      if (val !== null) {
+        return { el: numBox, label: titleTxt, value: val };
+      }
+    }
+    return null;
   }
 
   // ---------- 自动查找页面整体 ROI 元素（兼容千川全域 / 千川乘方 Aurora / 推直播间 / 标准投放 / 实时大屏） ----------
@@ -787,19 +1436,30 @@
 
     const metricCards = Array.from(
       document.querySelectorAll(
-        ".oc-promotion-metric-card, .oc-statistic, [class*='metric-card'], [class*='kpi-card'], [class*='stat-card']"
+        ".aurora-qc-statistic, .oc-promotion-metric-card, .oc-statistic, [class*='metricCardStatistic'], [class*='metric-card'], [class*='kpi-card'], [class*='stat-card']"
       )
     ).filter((c) => isVisible(c));
     const preferredCardMatches = [];
     for (const card of metricCards) {
       const rect = card.getBoundingClientRect();
       if (rect.width > 640 || rect.height > 280) continue;
-      const titleEl = card.querySelector(".oc-statistic-title, [class*='title'], [class*='label'], [class*='name']");
-      const titleTxt = normalizeText(titleEl?.innerText || titleEl?.textContent);
+      const titleEl = card.querySelector(
+        "[data-testid='metric-card-title-region'], .aurora-qc-statistic-title, .oc-statistic-title, [class*='title'], [class*='label'], [class*='name']"
+      );
+      const titleTxt = normalizeText(titleEl?.getAttribute?.("title") || titleEl?.innerText || titleEl?.textContent);
       if (!titleTxt || titleTxt.length > 26 || !/ROI/i.test(titleTxt) || ROI_EXCLUDE_RE.test(titleTxt) || /建议/.test(titleTxt)) {
         continue;
       }
+      const auroraRow = card.querySelector(".aurora-qc-statistic-value-row");
+      const auroraInner = card.querySelector(".aurora-qc-statistic-value-row > .aurora-qc-statistic-value-text");
+      const auroraTarget =
+        auroraInner && parseMetricNumber(readElementMetricText(auroraInner)) !== null
+          ? auroraInner
+          : auroraRow && parseMetricNumber(readElementMetricText(auroraRow)) !== null
+            ? auroraRow
+            : null;
       const numBox =
+        auroraTarget ||
         card.querySelector(".oc-promotion-metric-card-number, .oc-statistic-content") ||
         findBestMetricElementInCard(card, titleEl);
       if (!numBox || !isVisible(numBox)) continue;
@@ -855,7 +1515,7 @@
 
     for (const item of candidates) {
       let container = item.el.parentElement;
-      for (let depth = 0; depth < 8 && container && container !== document.body; depth++) {
+      for (let depth = 0; depth < 12 && container && container !== document.body; depth++) {
         const rect = container.getBoundingClientRect();
         if (rect.width > 640 || rect.height > 280) break;
         if (rect.width >= 80 && rect.height >= 36) {
@@ -1009,7 +1669,9 @@
       if (roiIdx === -1) continue;
 
       const costIdx = findBestColumnIndex(headerTexts, config.costHeaderKeyword, "cost");
-      const statusIdx = findBestColumnIndex(headerTexts, "计划状态,投放状态,状态", "status");
+      const statusIdx = findBestColumnIndex(headerTexts, "调控状态,计划状态,投放状态,商品状态,状态", "status");
+      const budgetIdx = findBestColumnIndex(headerTexts, "调控预算,每日预算,日预算,计划预算,预算", "budget");
+      const settingsIdx = findBestColumnIndex(headerTexts, "投放设置,商品推广设置,推广设置,设置", "settings");
       let nameIdx = findBestColumnIndex(headerTexts, config.nameHeaderKeyword, "name");
       if (nameIdx === -1) nameIdx = 0;
 
@@ -1030,20 +1692,39 @@
         const expectedCols = headerCols.length;
         const roiCell = findRowCellByColumn(cells, roiIdx, headerCols[roiIdx]?.rect, expectedCols);
         const roiVal = parseMetricNumber(roiCell?.innerText || roiCell?.textContent);
-        if (roiVal === null) return;
-
         const costCell =
           costIdx >= 0 ? findRowCellByColumn(cells, costIdx, headerCols[costIdx]?.rect, expectedCols) : null;
         const costVal = costCell ? parseMetricNumber(costCell.innerText || costCell.textContent) : null;
+        if (roiVal === null && (costVal === null || costVal <= 0)) return;
+
+        const budgetCell =
+          budgetIdx >= 0 ? findRowCellByColumn(cells, budgetIdx, headerCols[budgetIdx]?.rect, expectedCols) : null;
+        const settingsCell =
+          settingsIdx >= 0 ? findRowCellByColumn(cells, settingsIdx, headerCols[settingsIdx]?.rect, expectedCols) : null;
+        const budgetVal = extractBudgetFromRow(budgetCell, settingsCell);
+
         const statusCell =
           statusIdx >= 0 ? findRowCellByColumn(cells, statusIdx, headerCols[statusIdx]?.rect, expectedCols) : null;
         const statusText = extractPlanStatus(statusCell);
+        const guaranteeState = extractGuaranteeState(statusCell);
         const nameCell = findRowCellByColumn(cells, nameIdx, headerCols[nameIdx]?.rect, expectedCols) || cells[0];
         const ident = extractPlanIdentity(nameCell, tr, i);
 
         if (!seenRows.has(ident.id)) {
           seenRows.add(ident.id);
-          rowsResult.push({ id: ident.id, name: ident.name, status: statusText, roi: roiVal, cost: costVal });
+          rowsResult.push({
+            id: ident.id,
+            name: ident.name,
+            status: statusText,
+            guaranteeState,
+            roi: roiVal,
+            cost: costVal,
+            budget: budgetVal,
+            rowEls: [tr],
+            roiCell,
+            costCell,
+            statusCell,
+          });
         }
       });
 
@@ -1087,17 +1768,22 @@
       }
 
       const headerTexts = allHeaderCols.map((c) => c.text);
-      const roiHIdx = findBestColumnIndex(headerTexts, config.roiHeaderKeyword, "roi");
+      let roiHIdx = findBestColumnIndex(headerTexts, config.roiHeaderKeyword, "roi");
       if (roiHIdx === -1) continue;
 
       const costHIdx = findBestColumnIndex(headerTexts, config.costHeaderKeyword, "cost");
-      const statusHIdx = findBestColumnIndex(headerTexts, "计划状态,投放状态,状态", "status");
+      const statusHIdx = findBestColumnIndex(headerTexts, "调控状态,计划状态,投放状态,商品状态,状态", "status");
+      const budgetHIdx = findBestColumnIndex(headerTexts, "调控预算,每日预算,日预算,计划预算,预算", "budget");
+      const settingsHIdx = findBestColumnIndex(headerTexts, "投放设置,商品推广设置,推广设置,设置", "settings");
       const nameHIdx = findBestColumnIndex(headerTexts, config.nameHeaderKeyword, "name");
 
-      const roiCol = allHeaderCols[roiHIdx];
+      let roiCol = allHeaderCols[roiHIdx];
       const costCol = costHIdx >= 0 ? allHeaderCols[costHIdx] : null;
       const statusCol = statusHIdx >= 0 ? allHeaderCols[statusHIdx] : null;
-      const nameCol = nameHIdx >= 0 ? allHeaderCols[nameHIdx] : allHeaderCols[0];
+      const budgetCol = budgetHIdx >= 0 ? allHeaderCols[budgetHIdx] : null;
+      const settingsCol = settingsHIdx >= 0 ? allHeaderCols[settingsHIdx] : null;
+      const firstNamedHeader = allHeaderCols.find((c) => normalizeText(c.text).length > 0) || allHeaderCols[0];
+      const nameCol = nameHIdx >= 0 ? allHeaderCols[nameHIdx] : firstNamedHeader;
 
       // 找到与 roiCol 水平位置重叠的主表体 table
       const pickBodyTableForHeader = (col) => {
@@ -1121,9 +1807,11 @@
         return bestTable || siblingBodyTables[0];
       };
 
-      const roiBodyTable = pickBodyTableForHeader(roiCol);
+      let roiBodyTable = pickBodyTableForHeader(roiCol);
       const costBodyTable = costCol ? pickBodyTableForHeader(costCol) : roiBodyTable;
       const statusBodyTable = statusCol ? pickBodyTableForHeader(statusCol) : roiBodyTable;
+      const budgetBodyTable = budgetCol ? pickBodyTableForHeader(budgetCol) : roiBodyTable;
+      const settingsBodyTable = settingsCol ? pickBodyTableForHeader(settingsCol) : roiBodyTable;
       const nameBodyTable = nameCol ? pickBodyTableForHeader(nameCol) : roiBodyTable;
 
       const getValidRows = (bt) => {
@@ -1146,9 +1834,34 @@
         return valid;
       };
 
-      const roiRows = getValidRows(roiBodyTable);
+      let roiRows = getValidRows(roiBodyTable);
+      // 兜底：如 /uni-prom（推直播间）存在「综合营销ROI」全为 "-" 而「整体支付ROI」有实数，自动切换到有实数的候选 ROI 列
+      const countNumericForCol = (col, rowsPool) =>
+        rowsPool.reduce((acc, r) => {
+          const cell = findRowCellByColumn(r.cells, col.idx, col.rect, col.colCount || 0);
+          return acc + (parseMetricNumber(cell?.innerText || cell?.textContent) !== null ? 1 : 0);
+        }, 0);
+      if (roiRows.length > 0 && countNumericForCol(roiCol, roiRows) === 0) {
+        const altIndices = headerTexts
+          .map((txt, idx) => ({ txt, idx }))
+          .filter(({ txt, idx }) => idx !== roiHIdx && /roi/i.test(txt) && !ROI_EXCLUDE_RE.test(txt));
+        for (const alt of altIndices) {
+          const altCol = allHeaderCols[alt.idx];
+          const altBody = pickBodyTableForHeader(altCol);
+          const altRows = altBody === roiBodyTable ? roiRows : getValidRows(altBody);
+          if (countNumericForCol(altCol, altRows) > 0) {
+            roiHIdx = alt.idx;
+            roiCol = altCol;
+            roiBodyTable = altBody;
+            roiRows = altRows;
+            break;
+          }
+        }
+      }
       const costRows = costBodyTable === roiBodyTable ? roiRows : getValidRows(costBodyTable);
       const statusRows = statusBodyTable === roiBodyTable ? roiRows : getValidRows(statusBodyTable);
+      const budgetRows = budgetBodyTable === roiBodyTable ? roiRows : getValidRows(budgetBodyTable);
+      const settingsRows = settingsBodyTable === roiBodyTable ? roiRows : getValidRows(settingsBodyTable);
       const nameRows = nameBodyTable === roiBodyTable ? roiRows : getValidRows(nameBodyTable);
 
       const findPairedRow = (targetRow, targetIdx, pool) => {
@@ -1173,23 +1886,45 @@
       roiRows.forEach((rowObj, idx) => {
         const roiCell = findRowCellByColumn(rowObj.cells, roiCol.idx, roiCol.rect, roiCol.colCount || 0);
         const roiVal = parseMetricNumber(roiCell?.innerText || roiCell?.textContent);
-        if (roiVal === null) return;
 
         let costVal = null;
+        let costRow = null;
+        let costCell = null;
         if (costCol) {
-          const costRow = findPairedRow(rowObj, idx, costRows);
+          costRow = findPairedRow(rowObj, idx, costRows);
           if (costRow) {
-            const costCell = findRowCellByColumn(costRow.cells, costCol.idx, costCol.rect, costCol.colCount || 0);
+            costCell = findRowCellByColumn(costRow.cells, costCol.idx, costCol.rect, costCol.colCount || 0);
             costVal = parseMetricNumber(costCell?.innerText || costCell?.textContent);
           }
         }
+        if (roiVal === null && (costVal === null || costVal <= 0)) return;
+
+        let budgetCell = null;
+        if (budgetCol) {
+          const budgetRow = findPairedRow(rowObj, idx, budgetRows);
+          if (budgetRow) {
+            budgetCell = findRowCellByColumn(budgetRow.cells, budgetCol.idx, budgetCol.rect, budgetCol.colCount || 0);
+          }
+        }
+        let settingsCell = null;
+        if (settingsCol) {
+          const settingsRow = findPairedRow(rowObj, idx, settingsRows);
+          if (settingsRow) {
+            settingsCell = findRowCellByColumn(settingsRow.cells, settingsCol.idx, settingsCol.rect, settingsCol.colCount || 0);
+          }
+        }
+        const budgetVal = extractBudgetFromRow(budgetCell, settingsCell);
 
         let statusText = "";
+        let statusRow = null;
+        let statusCell = null;
+        let guaranteeState = "unknown";
         if (statusCol) {
-          const statusRow = findPairedRow(rowObj, idx, statusRows);
+          statusRow = findPairedRow(rowObj, idx, statusRows);
           if (statusRow) {
-            const statusCell = findRowCellByColumn(statusRow.cells, statusCol.idx, statusCol.rect, statusCol.colCount || 0);
+            statusCell = findRowCellByColumn(statusRow.cells, statusCol.idx, statusCol.rect, statusCol.colCount || 0);
             statusText = extractPlanStatus(statusCell);
+            guaranteeState = extractGuaranteeState(statusCell);
           }
         }
 
@@ -1201,7 +1936,22 @@
 
         if (!seenRows.has(ident.id)) {
           seenRows.add(ident.id);
-          rowsResult.push({ id: ident.id, name: ident.name, status: statusText, roi: roiVal, cost: costVal });
+          const pairedRowEls = Array.from(
+            new Set([rowObj.tr, nameRow?.tr, costRow?.tr, statusRow?.tr].filter(Boolean))
+          );
+          rowsResult.push({
+            id: ident.id,
+            name: ident.name,
+            status: statusText,
+            guaranteeState,
+            roi: roiVal,
+            cost: costVal,
+            budget: budgetVal,
+            rowEls: pairedRowEls,
+            roiCell,
+            costCell,
+            statusCell,
+          });
         }
       });
 
@@ -1241,7 +1991,9 @@
       if (roiIdx === -1) continue;
 
       const costIdx = findBestColumnIndex(headerTexts, config.costHeaderKeyword, "cost");
-      const statusIdx = findBestColumnIndex(headerTexts, "计划状态,投放状态,状态", "status");
+      const statusIdx = findBestColumnIndex(headerTexts, "调控状态,计划状态,投放状态,商品状态,状态", "status");
+      const budgetIdx = findBestColumnIndex(headerTexts, "调控预算,每日预算,日预算,计划预算,预算", "budget");
+      const settingsIdx = findBestColumnIndex(headerTexts, "投放设置,商品推广设置,推广设置,设置", "settings");
       let nameIdx = findBestColumnIndex(headerTexts, config.nameHeaderKeyword, "name");
       if (nameIdx === -1) nameIdx = 0;
 
@@ -1277,20 +2029,40 @@
         }
         const roiCell = findRowCellByColumn(band.cells, roiIdx, headerInfos[roiIdx].rect);
         const roiVal = parseMetricNumber(roiCell?.innerText || roiCell?.textContent);
-        if (roiVal === null) return;
 
         const costCell =
           costIdx >= 0 ? findRowCellByColumn(band.cells, costIdx, headerInfos[costIdx].rect) : null;
         const costVal = costCell ? parseMetricNumber(costCell.innerText || costCell.textContent) : null;
+        if (roiVal === null && (costVal === null || costVal <= 0)) return;
+
+        const budgetCell =
+          budgetIdx >= 0 ? findRowCellByColumn(band.cells, budgetIdx, headerInfos[budgetIdx].rect) : null;
+        const settingsCell =
+          settingsIdx >= 0 ? findRowCellByColumn(band.cells, settingsIdx, headerInfos[settingsIdx].rect) : null;
+        const budgetVal = extractBudgetFromRow(budgetCell, settingsCell);
+
         const statusCell =
           statusIdx >= 0 ? findRowCellByColumn(band.cells, statusIdx, headerInfos[statusIdx].rect) : null;
         const statusText = extractPlanStatus(statusCell);
+        const guaranteeState = extractGuaranteeState(statusCell);
         const nameCell = findRowCellByColumn(band.cells, nameIdx, headerInfos[nameIdx]?.rect) || band.cells[0];
         const ident = extractPlanIdentity(nameCell, band.rowEl, idx);
 
         if (!seen.has(ident.id)) {
           seen.add(ident.id);
-          rowsResult.push({ id: ident.id, name: ident.name, status: statusText, roi: roiVal, cost: costVal });
+          rowsResult.push({
+            id: ident.id,
+            name: ident.name,
+            status: statusText,
+            guaranteeState,
+            roi: roiVal,
+            cost: costVal,
+            budget: budgetVal,
+            rowEls: [band.rowEl],
+            roiCell,
+            costCell,
+            statusCell,
+          });
         }
       });
 
@@ -1400,12 +2172,16 @@
       const roiIdx = findBestColumnIndex(headerTexts, config.roiHeaderKeyword, "roi");
       if (roiIdx === -1) continue;
       const costIdx = findBestColumnIndex(headerTexts, config.costHeaderKeyword, "cost");
-      const statusIdx = findBestColumnIndex(headerTexts, "计划状态,投放状态,状态", "status");
+      const statusIdx = findBestColumnIndex(headerTexts, "调控状态,计划状态,投放状态,商品状态,状态", "status");
+      const budgetIdx = findBestColumnIndex(headerTexts, "调控预算,每日预算,日预算,计划预算,预算", "budget");
+      const settingsIdx = findBestColumnIndex(headerTexts, "投放设置,商品推广设置,推广设置,设置", "settings");
       const nameIdx = findBestColumnIndex(headerTexts, config.nameHeaderKeyword, "name");
 
       const roiHeader = peerHeaders[roiIdx];
       const costHeader = costIdx >= 0 ? peerHeaders[costIdx] : null;
       const statusHeader = statusIdx >= 0 ? peerHeaders[statusIdx] : null;
+      const budgetHeader = budgetIdx >= 0 ? peerHeaders[budgetIdx] : null;
+      const settingsHeader = settingsIdx >= 0 ? peerHeaders[settingsIdx] : null;
       const nameHeader = nameIdx >= 0 ? peerHeaders[nameIdx] : peerHeaders[0];
 
       // 收集表头下方的数据行元素
@@ -1480,20 +2256,37 @@
 
         const roiCell = findRowCellByColumn(allCells, -1, roiHeader.rect);
         const roiVal = parseMetricNumber(roiCell?.innerText || roiCell?.textContent);
-        if (roiVal === null) return;
 
         const costCell = costHeader ? findRowCellByColumn(allCells, -1, costHeader.rect) : null;
         const costVal = costCell ? parseMetricNumber(costCell.innerText || costCell.textContent) : null;
+        if (roiVal === null && (costVal === null || costVal <= 0)) return;
+
+        const budgetCell = budgetHeader ? findRowCellByColumn(allCells, -1, budgetHeader.rect) : null;
+        const settingsCell = settingsHeader ? findRowCellByColumn(allCells, -1, settingsHeader.rect) : null;
+        const budgetVal = extractBudgetFromRow(budgetCell, settingsCell);
 
         const statusCell = statusHeader ? findRowCellByColumn(allCells, -1, statusHeader.rect) : null;
         const statusText = extractPlanStatus(statusCell);
+        const guaranteeState = extractGuaranteeState(statusCell);
 
         const nameCell = (nameHeader ? findRowCellByColumn(allCells, -1, nameHeader.rect) : null) || allCells[0];
         const ident = extractPlanIdentity(nameCell, primaryRow, idx);
 
         if (!seen.has(ident.id)) {
           seen.add(ident.id);
-          rowsResult.push({ id: ident.id, name: ident.name, status: statusText, roi: roiVal, cost: costVal });
+          rowsResult.push({
+            id: ident.id,
+            name: ident.name,
+            status: statusText,
+            guaranteeState,
+            roi: roiVal,
+            cost: costVal,
+            budget: budgetVal,
+            rowEls: band.rowEls,
+            roiCell,
+            costCell,
+            statusCell,
+          });
         }
       });
 
@@ -1722,6 +2515,14 @@
 
     if (!direction) return "ok";
 
+    // 按推送触发复选框过滤：未勾选的方向仅做页面/明细标亮，不发推送不响铃
+    if (direction === "low" && config.pushOnLow === false) {
+      return direction;
+    }
+    if (direction === "high" && config.pushOnHigh === false) {
+      return direction;
+    }
+
     const cooldownMs = Math.max(0, Number(config.cooldownMinutes || 0)) * 60 * 1000;
     const last = cooldownMap.get(targetKey);
     const now = Date.now();
@@ -1744,6 +2545,77 @@
     dispatchToBackground({ title, summary, detailLines, level: direction });
 
     return direction;
+  }
+
+  // ---------- 消耗即将撞线 / 已撞线 判断与推送 ----------
+  function checkAndAlertCost(targetKey, label, costVal, capVal, extraLines = []) {
+    if (!config.costAlertEnabled) return { state: "ok", pct: 0 };
+    if (costVal === null || capVal === null || !Number.isFinite(costVal) || !Number.isFinite(capVal) || capVal <= 0) {
+      return { state: "ok", pct: 0 };
+    }
+    const warnPct = Math.max(1, Math.min(100, Number(config.budgetWarnPercent || 80)));
+    const pct = (costVal / capVal) * 100;
+    if (pct < warnPct) return { state: "ok", pct };
+
+    const isHit = pct >= 100;
+    const state = isHit ? "cost_hit" : "cost_warn";
+
+    // 若关闭了“消耗撞线推送”，仅在页面和明细中标亮，不发推送不响铃
+    if (config.pushOnCost === false) {
+      return { state, pct };
+    }
+
+    // 即将撞线(80%)与已撞线(100%)分键冷却：80%提醒后，真正到100%仍立即强提醒一次
+    const cdKey = `${targetKey}:${state}`;
+    const cooldownMs = Math.max(0, Number(config.cooldownMinutes || 0)) * 60 * 1000;
+    const last = cooldownMap.get(cdKey);
+    const now = Date.now();
+    if (last && now - last.ts < cooldownMs) {
+      return { state, pct };
+    }
+    cooldownMap.set(cdKey, { ts: now, direction: state });
+
+    const remain = Math.max(0, capVal - costVal);
+    const title = isHit ? "🚨 预算已撞墙（请加预算）" : "⚡ 预算快撞墙（请加预算）";
+    const summary = isHit
+      ? `${label} 消耗已达 ${formatCostDisplay(costVal)} / 预算 ${formatCostDisplay(capVal)}（${pct.toFixed(1)}%，已撞墙，请及时加预算）`
+      : `${label} 消耗 ${formatCostDisplay(costVal)} / 预算 ${formatCostDisplay(capVal)}（已烧 ${pct.toFixed(1)}%，仅剩 ${formatCostDisplay(remain)}，快撞墙请加预算）`;
+    const detailLines = [
+      `触发时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+      `撞墙预警比例：${warnPct}%`,
+      ...extraLines,
+      `页面标题：${document.title || "监控页面"}`,
+    ];
+
+    const beepLevel = isHit ? "low" : "warn";
+    playBeep(beepLevel);
+    pushLog(isHit ? "low" : "warn", summary);
+    dispatchToBackground({ title, summary, detailLines, level: isHit ? "error" : "warn" });
+
+    return { state, pct };
+  }
+
+  // ---------- 过保计划可选推送（默认仅表格黄色标记，勾选「过保推」后才发推送） ----------
+  function checkAndAlertExpired(targetKey, label, guaranteeState, extraLines = []) {
+    if (!config.pushOnExpired) return;
+    const cdKey = `expired:${targetKey}`;
+    const cooldownMs = Math.max(15, Number(config.cooldownMinutes || 10)) * 60 * 1000;
+    const last = cooldownMap.get(cdKey);
+    const now = Date.now();
+    if (last && now - last.ts < cooldownMs) return;
+    cooldownMap.set(cdKey, { ts: now, direction: "expired" });
+
+    const tagText = guaranteeState === "expired" ? "已过赔付保障期（灰保）" : "无赔付保障（过保）";
+    const title = "⚠️ 计划已过保提醒（防跑偏/跑飞）";
+    const summary = `${label} 当前${tagText}，建议重点盯盘防止跑偏跑飞`;
+    const detailLines = [
+      `检测时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+      ...extraLines,
+      `页面标题：${document.title || "监控页面"}`,
+    ];
+    playBeep("warn");
+    pushLog("warn", summary);
+    dispatchToBackground({ title, summary, detailLines, level: "warn" });
   }
 
   function dispatchToBackground({ title, summary, detailLines, level }, isTest = false) {
@@ -1820,6 +2692,20 @@
     if (wantSingle) {
       let binding = getActivePageBinding();
       let el = binding.selector ? document.querySelector(binding.selector) : null;
+      // 防止千川乘方切换「商品视图 / 计划视图 / 直播」导致同位置卡片变成「整体消耗」等其他指标：校验所在指标卡标题
+      if (el && binding.label && /ROI/i.test(binding.label)) {
+        const hostCard = el.closest?.(".aurora-qc-statistic, .oc-promotion-metric-card, .oc-statistic");
+        if (hostCard) {
+          const cardTitleEl = hostCard.querySelector(
+            "[data-testid='metric-card-title-region'], .aurora-qc-statistic-title, .oc-statistic-title, [class*='title']"
+          );
+          const cardTitle = normalizeText(cardTitleEl?.getAttribute?.("title") || cardTitleEl?.innerText || cardTitleEl?.textContent);
+          if (cardTitle && !/ROI/i.test(cardTitle)) {
+            el = null;
+            healthState.lastAutoBindAt = 0; // 立刻重探正确卡片
+          }
+        }
+      }
       let val = el ? parseMetricNumber(readElementMetricText(el)) : null;
 
       // 当前页未绑定、切页后失效或异步指标卡刚渲染完成时，每 3 秒自动重探一次整体 ROI 指标卡
@@ -1864,10 +2750,14 @@
     let tableSubText = "";
     let tableValid = false;
     let tableFp = "";
+    const abnormalItems = [];
 
     if (wantTable) {
       const { rows, meta } = scanCampaignTables();
       const minCost = Number(config.minCost || 0);
+      const lowerVal = config.lowerLimit !== "" && config.lowerLimit !== null ? Number(config.lowerLimit) : null;
+      const upperVal = config.upperLimit !== "" && config.upperLimit !== null ? Number(config.upperLimit) : null;
+
       if (rows.length === 0) {
         $("tableScanSummary").textContent =
           "暂未识别到含 ROI 列的表格（请确认列表已加载，或点右上角「复制诊断」发给开发者）";
@@ -1880,39 +2770,174 @@
 
         let activeCount = 0;
         let alertCount = 0;
+        let statusSkipped = 0;
+        let costSkipped = 0;
         let worst = "ok";
         let minRoi = Infinity;
         let maxRoi = -Infinity;
 
-        for (const row of rows) {
-          if (config.onlyDelivering && row.status && !/投放中/.test(row.status)) {
-            continue;
+        const wantDelivering = Boolean(config.onlyDelivering);
+        const wantRegulating = Boolean(config.onlyRegulating);
+        const manualSingleCap =
+          config.singleCostLimit !== "" && config.singleCostLimit !== null && Number(config.singleCostLimit) > 0
+            ? Number(config.singleCostLimit)
+            : null;
+        let costAlertCount = 0;
+        let expiredCount = 0;
+
+        for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+          const row = rows[rowIdx];
+          if (wantDelivering || wantRegulating) {
+            const stText = String(row.status || "");
+            const matchDel = wantDelivering && /投放中/.test(stText);
+            const matchReg = wantRegulating && /调控中/.test(stText);
+            if (!matchDel && !matchReg) {
+              statusSkipped++;
+              continue;
+            }
           }
+
+          // 0) 过保计划黄色标记：仅标记明确的灰色「保」（已过保），绿保和无保图标均不显示
+          if (config.markExpiredGuarantee !== false && row.guaranteeState === "expired") {
+            expiredCount++;
+            const expExtra = [];
+            if (row.cost !== null) expExtra.push(`当前消耗：${formatCostDisplay(row.cost)}`);
+            if (row.roi !== null) expExtra.push(`当前 ROI：${row.roi}`);
+            if (row.status) expExtra.push(`状态：${row.status}`);
+            checkAndAlertExpired(row.id, `计划「${row.name}」`, row.guaranteeState, expExtra);
+            abnormalItems.push({
+              id: `${row.id}:expired`,
+              rowOrder: rowIdx + 1,
+              name: row.name,
+              status: row.status,
+              guaranteeState: row.guaranteeState,
+              roi: row.roi,
+              cost: row.cost,
+              budget: row.budget || null,
+              direction: "expired",
+              rowEls: row.rowEls || [],
+              roiCell: row.roiCell || null,
+              costCell: row.costCell || null,
+              statusCell: row.statusCell || null,
+            });
+          }
+
+          // 1) 单计划 / 调控任务「消耗撞墙」监测（不受 minCost 限制，以免小预算任务如 ¥80 预算撞墙时被 ¥100 门槛漏报！）
+          let rowCostState = "ok";
+          if (config.costAlertEnabled && row.cost !== null && row.cost > 0) {
+            const cap = manualSingleCap || (row.budget && row.budget > 0 ? row.budget : null);
+            if (cap) {
+              const costExtra = [];
+              if (row.roi !== null) costExtra.push(`当前 ROI：${row.roi}`);
+              if (row.status) costExtra.push(`状态：${row.status}`);
+              const costRes = checkAndAlertCost(`cost_row:${row.id}`, `计划「${row.name}」`, row.cost, cap, costExtra);
+              if (costRes.state !== "ok") {
+                rowCostState = costRes.state;
+                costAlertCount++;
+                alertCount++;
+                worst = mergeStatus(worst, costRes.state === "cost_hit" ? "low" : "high");
+                abnormalItems.push({
+                  id: `${row.id}:cost`,
+                  rowOrder: rowIdx + 1,
+                  name: row.name,
+                  status: row.status,
+                  roi: row.roi,
+                  cost: row.cost,
+                  budget: cap,
+                  budgetPct: costRes.pct,
+                  direction: costRes.state,
+                  threshold: cap,
+                  rowEls: row.rowEls || [],
+                  roiCell: row.roiCell || null,
+                  costCell: row.costCell || null,
+                  statusCell: row.statusCell || null,
+                });
+              }
+            }
+          }
+
           if (row.cost !== null && minCost > 0 && row.cost < minCost) {
+            costSkipped++;
             continue;
           }
+          if (row.roi === null) continue;
+
           activeCount++;
           if (row.roi < minRoi) minRoi = row.roi;
           if (row.roi > maxRoi) maxRoi = row.roi;
 
           const extra = [];
           if (row.cost !== null) extra.push(`当前消耗：${formatCostDisplay(row.cost)}`);
-          if (row.status) extra.push(`计划状态：${row.status}`);
+          if (row.budget) extra.push(`计划预算：${formatCostDisplay(row.budget)}`);
+          if (row.status) extra.push(`状态：${row.status}`);
           const st = checkAndAlert(`row:${row.id}`, `计划「${row.name}」`, row.roi, extra);
           if (st !== "ok") {
             alertCount++;
             worst = mergeStatus(worst, st);
+            abnormalItems.push({
+              id: row.id,
+              rowOrder: rowIdx + 1,
+              name: row.name,
+              status: row.status,
+              roi: row.roi,
+              cost: row.cost,
+              budget: row.budget || null,
+              direction: st,
+              threshold: st === "low" ? lowerVal : upperVal,
+              rowEls: row.rowEls || [],
+              roiCell: row.roiCell || null,
+              costCell: row.costCell || null,
+              statusCell: row.statusCell || null,
+            });
           }
         }
 
-        const rangeText = activeCount > 0 ? `计划ROI ${minRoi}~${maxRoi}` : "暂无达标消耗计划";
-        const colHint = meta ? ` · 匹配列[${meta.nameHeader}|${meta.costHeader}|${meta.roiHeader}]` : "";
-        $("tableScanSummary").textContent = `已识别 ${rows.length} 条计划，达标 ${activeCount} 条，异常 ${alertCount} 条（${rangeText}）${colHint}`;
+        const filterNotes = [];
+        if (statusSkipped > 0) filterNotes.push(`状态过滤${statusSkipped}条`);
+        if (costSkipped > 0) filterNotes.push(`低于消耗门槛¥${minCost}过滤${costSkipped}条`);
+        const filterNoteStr = filterNotes.length > 0 ? `（${filterNotes.join("，")}）` : "";
+        const rangeText = activeCount > 0 ? `ROI ${minRoi}~${maxRoi}` : `0条达标${filterNoteStr}`;
+        const costNote = costAlertCount > 0 ? `，撞墙 ${costAlertCount} 条` : "";
+        const expNote = expiredCount > 0 ? `，过保 ${expiredCount} 条` : "";
+        const colHint = meta ? ` · 列[${meta.nameHeader}|${meta.costHeader}|${meta.roiHeader}]` : "";
+        $("tableScanSummary").textContent = `已识别 ${rows.length} 条，达标 ${activeCount} 条，异常 ${alertCount} 条${costNote}${expNote}${filterNoteStr}${activeCount > 0 ? `（${rangeText}）` : ""}${colHint}`;
         tableStatus = worst;
         tableValueText = alertCount > 0 ? `${alertCount}条异常` : `${activeCount}条正常`;
         tableSubText = rangeText;
       }
     }
+
+    // 整体消耗撞线监测（若设置了「整体消耗上限」）
+    let overallCostStatusLevel = "idle";
+    const overallCap =
+      config.overallCostLimit !== "" && config.overallCostLimit !== null && Number(config.overallCostLimit) > 0
+        ? Number(config.overallCostLimit)
+        : null;
+    const overallCostBox = $("overallCostStatus");
+    if (config.costAlertEnabled && overallCap) {
+      const foundCost = autoFindOverallCostElement();
+      if (foundCost) {
+        const res = checkAndAlertCost("cost_overall", foundCost.label || "整体消耗", foundCost.value, overallCap);
+        const remain = Math.max(0, overallCap - foundCost.value);
+        if (overallCostBox) {
+          overallCostBox.textContent = `${foundCost.label}：${formatCostDisplay(foundCost.value)} / ${formatCostDisplay(overallCap)}（${res.pct.toFixed(1)}%，剩 ${formatCostDisplay(remain)}）`;
+          overallCostBox.style.color =
+            res.state === "cost_hit" ? "#fda4af" : res.state === "cost_warn" ? "#d8b4fe" : "#94a3b8";
+        }
+        if (res.state === "cost_hit") overallCostStatusLevel = "low";
+        else if (res.state === "cost_warn") overallCostStatusLevel = "high";
+      } else if (overallCostBox) {
+        overallCostBox.textContent = `整体消耗上限 ${formatCostDisplay(overallCap)}：当前页未找到顶部整体消耗卡片`;
+        overallCostBox.style.color = "#94a3b8";
+      }
+    } else if (overallCostBox) {
+      overallCostBox.textContent = config.costAlertEnabled
+        ? `消耗撞线已开启（${config.budgetWarnPercent || 80}% 预警，自动读预算列；设整体上限可同步盯全店消耗）`
+        : "消耗撞线预警已关闭";
+      overallCostBox.style.color = "#8c98b3";
+    }
+
+    refreshAbnormalView(abnormalItems);
 
     // 页面健康与断流监测
     const pageTimeTag = findPageUpdateTimeText();
@@ -1923,16 +2948,16 @@
 
     const limitHint = `区间[${config.lowerLimit || "-∞"}, ${config.upperLimit || "+∞"}]`;
     if (config.mode === "both") {
-      const combinedStatus = mergeStatus(mergeStatus(singleStatus, tableStatus), anomalyLevel);
+      const combinedStatus = mergeStatus(mergeStatus(mergeStatus(singleStatus, tableStatus), overallCostStatusLevel), anomalyLevel);
       updateDisplay(
         combinedStatus,
         `整体 ${singleValueText} · ${tableValueText}`,
         `${limitHint} | ${tableSubText || singleSubText}`
       );
     } else if (config.mode === "single") {
-      updateDisplay(mergeStatus(singleStatus, anomalyLevel), singleValueText, `${singleSubText} · ${limitHint}`);
+      updateDisplay(mergeStatus(mergeStatus(singleStatus, overallCostStatusLevel), anomalyLevel), singleValueText, `${singleSubText} · ${limitHint}`);
     } else {
-      updateDisplay(mergeStatus(tableStatus, anomalyLevel), tableValueText, `${tableSubText} · ${limitHint}`);
+      updateDisplay(mergeStatus(mergeStatus(tableStatus, overallCostStatusLevel), anomalyLevel), tableValueText, `${tableSubText} · ${limitHint}`);
     }
   }
 
@@ -2007,13 +3032,13 @@
     const scanRes = scanCampaignTables();
     const autoRoi = autoFindRoiElement();
     return {
-      version: "1.1.3",
+      version: "1.2.0",
       urlPath: location.origin + location.pathname,
       autoOverallRoi: autoRoi ? { label: autoRoi.label, value: autoRoi.value, selector: autoRoi.selector } : null,
       roiCardHints,
       scanMeta: scanRes.meta,
       scannedCount: scanRes.rows.length,
-      sampleScanned: scanRes.rows.slice(0, 3),
+      sampleScanned: scanRes.rows.slice(0, 3).map(({ id, name, status, guaranteeState, roi, cost, budget }) => ({ id, name, status, guaranteeState, roi, cost, budget })),
       tablesCount: tables.length,
       tables: tables.slice(0, 8),
       roleGrids,
@@ -2076,6 +3101,10 @@
     if (persist) {
       config.enabled = false;
       saveConfig();
+      activeAbnormalId = "";
+      allAbnormalItems = [];
+      clearPageHighlights();
+      renderAbnormalList([], []);
       updateDisplay("idle", "--", "监控已暂停");
       updateHealthBox("ok", "页面健康：监控已暂停");
       syncMonitorButton();
@@ -2129,8 +3158,17 @@
 
       // 若点中了千川指标卡拆分的整数或小数子 span（全域或乘方 Aurora 通用），自动提升到完整数值容器
       const metricNumBox = target?.closest?.(".oc-promotion-metric-card-number");
+      const auroraValueRow = target?.closest?.(".aurora-qc-statistic-value-row");
+      let pickedCardLabel = "";
       if (metricNumBox) {
         target = metricNumBox;
+        pickedCardLabel = "整体支付ROI";
+      } else if (auroraValueRow) {
+        target = auroraValueRow;
+        const cardTitleEl = auroraValueRow
+          .closest?.(".aurora-qc-statistic")
+          ?.querySelector?.("[data-testid='metric-card-title-region'], .aurora-qc-statistic-title");
+        pickedCardLabel = normalizeText(cardTitleEl?.getAttribute?.("title") || cardTitleEl?.innerText || cardTitleEl?.textContent);
       } else {
         let cur = target;
         const curVal = readElementMetricText(cur).trim();
@@ -2157,7 +3195,7 @@
           : buildUniqueSelector(target);
       const rawMetricText = readElementMetricText(target);
       const val = parseMetricNumber(rawMetricText);
-      const label = metricNumBox ? "整体支付ROI" : `已选元素(${normalizeText(rawMetricText).slice(0, 12)})`;
+      const label = pickedCardLabel || `已选元素(${normalizeText(rawMetricText).slice(0, 12)})`;
       setActivePageBinding(sel, label);
       if (val === null) {
         showToast("已绑定元素，但当前文本里没看到数字，请确认是否选准了数值节点", 4500);
@@ -2214,11 +3252,238 @@
     const box = $("selectorPreview");
     const binding = getActivePageBinding();
     if (binding.selector) {
-      const labelPrefix = binding.label ? `${escapeHtml(binding.label)} → ` : "";
-      box.innerHTML = `已绑定：${labelPrefix}<span class="mono">${escapeHtml(binding.selector)}</span>`;
+      const labelText = binding.label || "自定义元素";
+      box.innerHTML = `已绑定：<strong style="color:#93c5fd;">${escapeHtml(labelText)}</strong> <span class="muted" title="${escapeHtml(binding.selector)}">（悬停查看路径）</span>`;
     } else {
       box.textContent = "尚未绑定整体 ROI（可自动查找，或点左侧按钮直接点页面数字）";
     }
+  }
+
+  function refreshAbnormalView(sourceItems = allAbnormalItems) {
+    allAbnormalItems = Array.isArray(sourceItems) ? sourceItems : [];
+    const filter = config.abnormalFilter || "all";
+    const sortMode = config.abnormalSort || "table";
+
+    let filtered = allAbnormalItems.filter((item) => {
+      if (filter === "low") return item.direction === "low";
+      if (filter === "high") return item.direction === "high";
+      if (filter === "cost") return item.direction === "cost_warn" || item.direction === "cost_hit";
+      if (filter === "expired") return item.direction === "expired";
+      return true;
+    });
+
+    filtered = [...filtered].sort((a, b) => {
+      if (sortMode === "extreme") {
+        const rank = { low: 0, cost_hit: 1, cost_warn: 2, expired: 3, high: 4 };
+        if (rank[a.direction] !== rank[b.direction]) return (rank[a.direction] ?? 9) - (rank[b.direction] ?? 9);
+        if (a.direction === "cost_hit" || a.direction === "cost_warn") return (b.budgetPct || 0) - (a.budgetPct || 0);
+        if (a.direction === "expired") return (a.rowOrder || 0) - (b.rowOrder || 0);
+        return a.direction === "low" ? a.roi - b.roi : b.roi - a.roi;
+      }
+      // 默认严格按表格从上到下顺序排列，逐条巡检不乱跳
+      return (a.rowOrder || 0) - (b.rowOrder || 0);
+    });
+
+    applyPageHighlights(filtered);
+    renderAbnormalList(filtered, allAbnormalItems);
+  }
+
+  function syncAbnormalActiveUI() {
+    const list = $("abnormalList");
+    const posEl = $("abnormalStepPos");
+    if (!list || !posEl) return;
+
+    const activeIdx = latestAbnormalItems.findIndex((item) => item.id === activeAbnormalId);
+    const cards = list.querySelectorAll(".abnormal-item");
+    cards.forEach((card, idx) => {
+      card.classList.toggle("active", idx === activeIdx);
+    });
+
+    if (latestAbnormalItems.length === 0) {
+      posEl.textContent = "当前筛选 0 条";
+    } else if (activeIdx >= 0) {
+      const cur = latestAbnormalItems[activeIdx];
+      posEl.textContent = `第 ${activeIdx + 1} / ${latestAbnormalItems.length} 条（表#${cur.rowOrder}）`;
+    } else {
+      posEl.textContent = `共 ${latestAbnormalItems.length} 条 · 点选或点下一条`;
+    }
+  }
+
+  function renderAbnormalList(items, totalItems = items) {
+    latestAbnormalItems = items || [];
+    const box = $("abnormalBox");
+    const list = $("abnormalList");
+    const titleEl = $("abnormalBoxTitle");
+    if (!box || !list) return;
+
+    if (!config.enabled || !totalItems || totalItems.length === 0) {
+      box.classList.remove("show");
+      list.innerHTML = "";
+      list.dataset.sig = "";
+      clearActiveRowFocus();
+      return;
+    }
+
+    const lowCount = totalItems.filter((i) => i.direction === "low").length;
+    const highCount = totalItems.filter((i) => i.direction === "high").length;
+    const costCount = totalItems.filter((i) => i.direction === "cost_warn" || i.direction === "cost_hit").length;
+    const expiredCount = totalItems.filter((i) => i.direction === "expired").length;
+    titleEl.textContent = `异常/重点计划明细（共 ${totalItems.length} 条）`;
+
+    const filter = config.abnormalFilter || "all";
+    $("filterAllPill").textContent = `全部 ${totalItems.length}`;
+    $("filterLowPill").textContent = `跌破 ${lowCount}`;
+    $("filterHighPill").textContent = `突破 ${highCount}`;
+    $("filterCostPill").textContent = `撞墙 ${costCount}`;
+    $("filterExpiredPill").textContent = `过保 ${expiredCount}`;
+    $("filterAllPill").classList.toggle("active", filter === "all");
+    $("filterLowPill").classList.toggle("active", filter === "low");
+    $("filterHighPill").classList.toggle("active", filter === "high");
+    $("filterCostPill").classList.toggle("active", filter === "cost");
+    $("filterExpiredPill").classList.toggle("active", filter === "expired");
+
+    const sortMode = config.abnormalSort || "table";
+    $("sortOrderToggle").textContent = sortMode === "table" ? "顺序：表格↑↓" : "顺序：极值";
+
+    // 用紧凑签名避免无变化时反复重绘导致滚动条跳回顶部
+    const renderSig = `${filter}|${sortMode}|` + latestAbnormalItems
+      .map((i) => `${i.id}:${i.rowOrder}:${i.direction}:${i.guaranteeState ?? ""}:${i.roi ?? ""}:${i.cost ?? ""}:${i.budgetPct ? i.budgetPct.toFixed(1) : ""}`)
+      .join("|");
+    if (list.dataset.sig !== renderSig) {
+      list.dataset.sig = renderSig;
+      if (latestAbnormalItems.length === 0) {
+        list.innerHTML = '<div class="muted" style="padding:6px 2px;">当前筛选条件下暂无计划</div>';
+      } else {
+        list.innerHTML = latestAbnormalItems
+          .map((item, idx) => {
+            const isActive = item.id === activeAbnormalId ? " active" : "";
+            const isCost = item.direction === "cost_warn" || item.direction === "cost_hit";
+            const isExpired = item.direction === "expired";
+            let metaText = "";
+            let pillText = "";
+            if (isCost) {
+              const remain = Math.max(0, (item.budget || 0) - (item.cost || 0));
+              const pctText = Number.isFinite(item.budgetPct) ? `${item.budgetPct.toFixed(1)}%` : "";
+              metaText = `消耗 ${formatCostDisplay(item.cost)} / 预算 ${formatCostDisplay(item.budget)} (${pctText} · 剩${formatCostDisplay(remain)}，请加预算)`;
+              pillText = item.direction === "cost_hit" ? "🚨已撞墙" : `⚡撞墙${Math.round(item.budgetPct || 0)}%`;
+            } else if (isExpired) {
+              const roiStr = item.roi !== null ? `ROI ${item.roi}` : "ROI -";
+              const costStr = item.cost !== null ? ` · 消耗 ${formatCostDisplay(item.cost)}` : "";
+              metaText = `已过保障期(灰保) · ${roiStr}${costStr}`;
+              pillText = "⚠️已过保";
+            } else {
+              const isLow = item.direction === "low";
+              const limitStr = isLow ? `<${item.threshold}` : `>${item.threshold}`;
+              const costStr = item.cost !== null ? ` · 消耗 ${formatCostDisplay(item.cost)}` : "";
+              metaText = `ROI ${item.roi} (${limitStr})${costStr}`;
+              pillText = isLow ? "↓跌破" : "↑突破";
+            }
+            return `
+              <div class="abnormal-item ${item.direction}${isActive}" data-idx="${idx}" title="点击平滑定位到表格第 ${item.rowOrder} 行">
+                <div class="abnormal-main">
+                  <div class="abnormal-name"><span class="row-seq">#${item.rowOrder}</span>${escapeHtml(item.name)}</div>
+                  <div class="abnormal-meta">${escapeHtml(metaText)}</div>
+                </div>
+                <span class="tag-pill ${item.direction}">${pillText}</span>
+              </div>
+            `;
+          })
+          .join("");
+      }
+    }
+
+    syncAbnormalActiveUI();
+    box.classList.add("show");
+  }
+
+  function focusAbnormalItem(idx, scrollCardIntoView = false) {
+    const item = latestAbnormalItems[idx];
+    if (!item) return;
+    const isCost = item.direction === "cost_warn" || item.direction === "cost_hit";
+    const isExpired = item.direction === "expired";
+    const target = (isCost ? item.costCell : isExpired ? item.statusCell : item.roiCell) || item.rowEls?.[0];
+    if (!target || !document.contains(target)) {
+      showToast("该计划行已离开当前视图，可能已翻页或被筛选隐藏", 2800);
+      return;
+    }
+    activeAbnormalId = item.id;
+    syncAbnormalActiveUI();
+
+    if (scrollCardIntoView) {
+      const card = $("abnormalList")?.querySelector?.(`.abnormal-item[data-idx="${idx}"]`);
+      card?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+    }
+
+    // 仅垂直居中定位，不强制晃动横向滚动条
+    target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+
+    clearActiveRowFocus();
+    for (const rEl of item.rowEls || [target]) {
+      if (!rEl || !rEl.setAttribute) continue;
+      rEl.setAttribute("data-qc-roi-active", "1");
+      activeFocusedRowEls.add(rEl);
+      rEl.removeAttribute("data-qc-roi-flash");
+      void rEl.offsetWidth;
+      rEl.setAttribute("data-qc-roi-flash", "1");
+      setTimeout(() => rEl.removeAttribute("data-qc-roi-flash"), 2200);
+    }
+  }
+
+  function stepAbnormalItem(delta) {
+    if (latestAbnormalItems.length === 0) return;
+    const curIdx = latestAbnormalItems.findIndex((item) => item.id === activeAbnormalId);
+    let nextIdx;
+    if (curIdx === -1) {
+      nextIdx = delta >= 0 ? 0 : latestAbnormalItems.length - 1;
+    } else {
+      nextIdx = (curIdx + delta + latestAbnormalItems.length) % latestAbnormalItems.length;
+    }
+    focusAbnormalItem(nextIdx, true);
+  }
+
+  function syncCompactMode() {
+    const compact = Boolean(config.compactMode);
+    $("panel").classList.toggle("compact", compact);
+    $("compactModeBtn").textContent = compact ? "配置" : "极简";
+  }
+
+  function enablePanelDragging() {
+    const header = $("panelHeader");
+    if (!header) return;
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let origLeft = 0;
+    let origTop = 0;
+
+    header.addEventListener("mousedown", (e) => {
+      if (e.target.closest?.("button")) return;
+      dragging = true;
+      const rect = host.getBoundingClientRect();
+      origLeft = rect.left;
+      origTop = rect.top;
+      startX = e.clientX;
+      startY = e.clientY;
+      host.style.right = "auto";
+      host.style.left = `${origLeft}px`;
+      host.style.top = `${origTop}px`;
+      e.preventDefault();
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const panelWidth = host.offsetWidth || 382;
+      const maxLeft = Math.max(8, window.innerWidth - panelWidth - 8);
+      const maxTop = Math.max(8, window.innerHeight - 60);
+      const nextLeft = Math.min(maxLeft, Math.max(8, origLeft + (e.clientX - startX)));
+      const nextTop = Math.min(maxTop, Math.max(8, origTop + (e.clientY - startY)));
+      host.style.left = `${nextLeft}px`;
+      host.style.top = `${nextTop}px`;
+    });
+
+    window.addEventListener("mouseup", () => {
+      dragging = false;
+    });
   }
 
   function pushLog(level, message) {
@@ -2246,22 +3511,235 @@
     $("pillBtn").style.display = open ? "none" : "flex";
   }
 
-  function switchMode(mode) {
+  function switchMode(mode, persist = true) {
     config.mode = mode;
     $("tabBoth").classList.toggle("active", mode === "both");
     $("tabSingle").classList.toggle("active", mode === "single");
     $("tabTable").classList.toggle("active", mode === "table");
     $("singleModeBox").style.display = mode === "both" || mode === "single" ? "flex" : "none";
     $("tableModeBox").style.display = mode === "both" || mode === "table" ? "flex" : "none";
-    saveConfig();
-    if (config.enabled) {
-      startMonitoring();
+    if (persist) {
+      saveConfig();
+      if (config.enabled) {
+        startMonitoring();
+      }
     }
   }
 
-  // ---------- 配置持久化 ----------
+  // ---------- 配置持久化（监控配置与 5 大推送渠道彻底隔离 + 三层持久备份 + 多标签页实时同步） ----------
+  function isExtensionAlive() {
+    try {
+      return typeof chrome !== "undefined" && Boolean(chrome.runtime && chrome.runtime.id);
+    } catch {
+      return false;
+    }
+  }
+
+  function ensureChannelHistoryShape(raw) {
+    const out = {};
+    for (const field of CHANNEL_STRING_FIELDS) {
+      const arr = Array.isArray(raw?.[field]) ? raw[field] : [];
+      out[field] = Array.from(new Set(arr.map((v) => String(v || "").trim()).filter(Boolean))).slice(0, 6);
+    }
+    return out;
+  }
+
+  function mergeHistoryMaps(...maps) {
+    const out = {};
+    for (const field of CHANNEL_STRING_FIELDS) {
+      const merged = [];
+      for (const m of maps) {
+        if (!m || !Array.isArray(m[field])) continue;
+        for (const item of m[field]) {
+          const v = String(item || "").trim();
+          if (v && !merged.includes(v)) merged.push(v);
+        }
+      }
+      out[field] = merged.slice(0, 6);
+    }
+    return out;
+  }
+
+  function buildChannelPayload(recordHistory = false) {
+    const history = ensureChannelHistoryShape(config.channelHistory);
+    if (recordHistory) {
+      for (const field of CHANNEL_STRING_FIELDS) {
+        const val = String(config[field] || "").trim();
+        if (val) {
+          history[field] = [val, ...history[field].filter((v) => v !== val)].slice(0, 6);
+        }
+      }
+      config.channelHistory = history;
+    }
+    const now = Date.now();
+    lastChannelsUpdatedAt = Math.max(now, lastChannelsUpdatedAt + 1);
+    return {
+      wecomWebhook: String(config.wecomWebhook || "").trim(),
+      wecomMobiles: String(config.wecomMobiles || "").trim(),
+      pushplusToken: String(config.pushplusToken || "").trim(),
+      customWebhook: String(config.customWebhook || "").trim(),
+      barkUrl: String(config.barkUrl || "").trim(),
+      desktopEnabled: Boolean(config.desktopEnabled),
+      soundEnabled: Boolean(config.soundEnabled),
+      pushOnLow: config.pushOnLow !== false,
+      pushOnHigh: config.pushOnHigh !== false,
+      pushOnCost: config.pushOnCost !== false,
+      pushOnExpired: Boolean(config.pushOnExpired),
+      channelHistory: history,
+      updatedAt: lastChannelsUpdatedAt,
+    };
+  }
+
+  function formatHistoryChipLabel(field, val) {
+    const s = String(val || "").trim();
+    if (field === "pushplusToken") {
+      if (s.length <= 8) return s;
+      return `${s.slice(0, 4)}****${s.slice(-4)}`;
+    }
+    if (field === "wecomWebhook") {
+      const keyMatch = s.match(/key=([^&]+)/i);
+      const tail = keyMatch ? keyMatch[1].slice(-6) : s.slice(-8);
+      return `企微 ...${tail}`;
+    }
+    if (field === "customWebhook") {
+      const prefix = s.includes("feishu") || s.includes("lark") ? "飞书" : s.includes("dingtalk") ? "钉钉" : "Webhook";
+      return `${prefix} ...${s.slice(-6)}`;
+    }
+    if (field === "barkUrl") {
+      const tail = s.replace(/\/+$/, "").split("/").pop() || s.slice(-8);
+      return `Bark ...${tail.slice(-6)}`;
+    }
+    return s.length > 18 ? `${s.slice(0, 16)}…` : s;
+  }
+
+  function renderChannelHistoryUI() {
+    const history = ensureChannelHistoryShape(config.channelHistory);
+    for (const field of CHANNEL_STRING_FIELDS) {
+      const datalist = $(`list_${field}`);
+      const chipsBox = $(`chips_${field}`);
+      const items = history[field] || [];
+      if (datalist) {
+        datalist.innerHTML = items.map((v) => `<option value="${escapeHtml(v)}"></option>`).join("");
+      }
+      if (chipsBox) {
+        const curVal = String(config[field] || "").trim();
+        if (items.length === 0) {
+          chipsBox.innerHTML = "";
+        } else {
+          chipsBox.innerHTML = items
+            .map((v, idx) => {
+              const activeCls = v === curVal ? " active" : "";
+              const tip = field === "pushplusToken" ? "点击填入已记住的 PushPlus Token" : `点击填入：${v}`;
+              return `<span class="history-chip${activeCls}" data-field="${field}" data-idx="${idx}" title="${escapeHtml(tip)}">${escapeHtml(formatHistoryChipLabel(field, v))}</span>`;
+            })
+            .join("");
+        }
+      }
+    }
+  }
+
+  function updatePushSaveStatus(overrideText = "", isWarn = false) {
+    const el = $("pushSaveStatus");
+    if (!el) return;
+    if (overrideText) {
+      el.textContent = overrideText;
+      el.className = `save-status${isWarn ? " warn" : ""}`;
+      return;
+    }
+    const configured = [];
+    if (config.desktopEnabled) configured.push("桌面弹窗");
+    if (String(config.wecomWebhook || "").trim()) configured.push("企微");
+    if (String(config.pushplusToken || "").trim()) configured.push("PushPlus");
+    if (String(config.customWebhook || "").trim()) configured.push("飞书/钉钉");
+    if (String(config.barkUrl || "").trim()) configured.push("Bark");
+
+    const onLow = config.pushOnLow !== false;
+    const onHigh = config.pushOnHigh !== false;
+    const onCost = config.pushOnCost !== false;
+    const onExpired = Boolean(config.pushOnExpired);
+    const dirParts = [];
+    if (onLow) dirParts.push("跌破");
+    if (onHigh) dirParts.push("突破");
+    if (onCost) dirParts.push("撞墙");
+    if (onExpired) dirParts.push("过保");
+    const dirText = dirParts.length > 0 ? `${dirParts.join("+")}推` : "仅页内标亮不推送";
+    if (configured.length === 0) {
+      el.textContent = `暂未启用推送渠道（策略：${dirText}，填写后自动记住）`;
+      el.className = "save-status warn";
+    } else {
+      el.textContent = `已持久化记住 ${configured.length} 个渠道：${configured.join(" · ")}（${dirText}）✓`;
+      el.className = "save-status";
+    }
+  }
+
+  function saveChannels(recordHistory = false, showNotice = false) {
+    const payload = buildChannelPayload(recordHistory);
+
+    // 第 1 层：同步写入当前域名 localStorage 备份（即使刚点过扩展刷新导致 context 失效也绝不丢数据）
+    try {
+      window.localStorage.setItem(CHANNELS_BACKUP_KEY, JSON.stringify(payload));
+    } catch {
+      // 忽略隐私模式或配额限制
+    }
+
+    // 第 2 & 3 层：写入 chrome.storage.local 与 chrome.storage.sync（跨页面/跨刷新永久保留）
+    if (isExtensionAlive()) {
+      try {
+        chrome.storage.local.set({ [CHANNELS_STORAGE_KEY]: payload });
+      } catch {
+        // 忽略瞬时异常
+      }
+      try {
+        if (chrome.storage.sync) {
+          chrome.storage.sync.set({ [CHANNELS_STORAGE_KEY]: payload });
+        }
+      } catch {
+        // 忽略 sync 禁用或配额异常
+      }
+      renderChannelHistoryUI();
+      updatePushSaveStatus();
+      if (showNotice) {
+        showToast("5 大推送渠道配置已永久保存（刷新页面/重启浏览器不丢失）", 3200);
+      }
+    } else {
+      renderChannelHistoryUI();
+      updatePushSaveStatus("已暂存本地备份，刷新当前网页后自动同步到插件", true);
+      if (showNotice) {
+        showToast("检测到插件刚刷新：配置已暂存本地，刷新本页后会自动恢复并生效", 4500);
+      }
+    }
+  }
+
   function saveConfig() {
-    chrome.storage.local.set({ [STORAGE_KEY]: config });
+    if (!isConfigHydrated || !isExtensionAlive()) return;
+    // 仅持久化监控与 UI 配置，不覆盖独立的 CHANNELS_STORAGE_KEY，杜绝多标签页互相冲掉推送 Token
+    const nonChannelConfig = { ...config };
+    for (const f of [...CHANNEL_STRING_FIELDS, ...CHANNEL_BOOL_FIELDS, "pushDirection", "channelHistory"]) {
+      delete nonChannelConfig[f];
+    }
+    try {
+      chrome.storage.local.set({ [STORAGE_KEY]: nonChannelConfig });
+    } catch {
+      // 忽略扩展上下文失效
+    }
+  }
+
+  function applyChannelsToInputs(skipFocused = false) {
+    const activeEl = shadow.activeElement;
+    for (const field of CHANNEL_STRING_FIELDS) {
+      const input = $(field);
+      if (!input) continue;
+      if (skipFocused && activeEl === input) continue;
+      input.value = config[field] || "";
+    }
+    $("desktopEnabled").checked = Boolean(config.desktopEnabled);
+    $("soundEnabled").checked = Boolean(config.soundEnabled);
+    $("pushOnLow").checked = config.pushOnLow !== false;
+    $("pushOnHigh").checked = config.pushOnHigh !== false;
+    $("pushOnCost").checked = config.pushOnCost !== false;
+    $("pushOnExpired").checked = Boolean(config.pushOnExpired);
+    renderChannelHistoryUI();
+    updatePushSaveStatus();
   }
 
   function applyConfigToInputs() {
@@ -2271,31 +3749,56 @@
     $("minCost").value = config.minCost;
     $("lowerLimit").value = config.lowerLimit;
     $("upperLimit").value = config.upperLimit;
+    $("costAlertEnabled").checked = config.costAlertEnabled !== false;
+    $("markExpiredGuarantee").checked = config.markExpiredGuarantee !== false;
+    $("budgetWarnPercent").value = config.budgetWarnPercent ?? "80";
+    $("overallCostLimit").value = config.overallCostLimit ?? "";
+    $("singleCostLimit").value = config.singleCostLimit ?? "";
     $("cooldownMinutes").value = config.cooldownMinutes;
     $("refreshIntervalSec").value = config.refreshIntervalSec;
     $("staleMinutes").value = config.staleMinutes;
     $("onlyDelivering").checked = Boolean(config.onlyDelivering);
+    $("onlyRegulating").checked = Boolean(config.onlyRegulating);
+    $("highlightAbnormalRows").checked = config.highlightAbnormalRows !== false;
     $("autoClickRefresh").checked = Boolean(config.autoClickRefresh);
     $("anomalyAlertEnabled").checked = Boolean(config.anomalyAlertEnabled);
-    $("desktopEnabled").checked = Boolean(config.desktopEnabled);
-    $("soundEnabled").checked = Boolean(config.soundEnabled);
-    $("wecomWebhook").value = config.wecomWebhook;
-    $("wecomMobiles").value = config.wecomMobiles;
-    $("pushplusToken").value = config.pushplusToken;
-    $("customWebhook").value = config.customWebhook;
-    $("barkUrl").value = config.barkUrl;
+    applyChannelsToInputs(false);
     renderSelectorPreview();
-    switchMode(config.mode);
+    syncCompactMode();
+    switchMode(config.mode, false);
     syncMonitorButton();
   }
 
   function bindEvents() {
+    enablePanelDragging();
     $("pillBtn").addEventListener("click", () => setPanelOpen(true));
     $("collapseBtn").addEventListener("click", () => setPanelOpen(false));
+    $("compactModeBtn").addEventListener("click", () => {
+      config.compactMode = !config.compactMode;
+      saveConfig();
+      syncCompactMode();
+    });
 
-    $("tabBoth").addEventListener("click", () => switchMode("both"));
-    $("tabSingle").addEventListener("click", () => switchMode("single"));
-    $("tabTable").addEventListener("click", () => switchMode("table"));
+    $("abnormalFilterGroup").addEventListener("click", (e) => {
+      const pill = e.target.closest?.(".mini-pill[data-filter]");
+      if (!pill) return;
+      config.abnormalFilter = pill.dataset.filter || "all";
+      saveConfig();
+      refreshAbnormalView();
+    });
+
+    $("sortOrderToggle").addEventListener("click", () => {
+      config.abnormalSort = config.abnormalSort === "extreme" ? "table" : "extreme";
+      saveConfig();
+      refreshAbnormalView();
+    });
+
+    $("prevAbnormalBtn").addEventListener("click", () => stepAbnormalItem(-1));
+    $("nextAbnormalBtn").addEventListener("click", () => stepAbnormalItem(1));
+
+    $("tabBoth").addEventListener("click", () => switchMode("both", true));
+    $("tabSingle").addEventListener("click", () => switchMode("single", true));
+    $("tabTable").addEventListener("click", () => switchMode("table", true));
 
     $("toggleMonitorBtn").addEventListener("click", () => {
       if (config.enabled) {
@@ -2344,7 +3847,26 @@
       }
     });
 
+    $("savePushBtn").addEventListener("click", () => {
+      for (const field of CHANNEL_STRING_FIELDS) {
+        config[field] = ($(field)?.value || "").trim();
+      }
+      saveChannels(true, true);
+    });
+
+    $("togglePushplusVisBtn").addEventListener("click", () => {
+      const inp = $("pushplusToken");
+      const btn = $("togglePushplusVisBtn");
+      const show = inp.type === "password";
+      inp.type = show ? "text" : "password";
+      btn.textContent = show ? "隐藏" : "显示";
+    });
+
     $("testPushBtn").addEventListener("click", () => {
+      for (const field of CHANNEL_STRING_FIELDS) {
+        config[field] = ($(field)?.value || "").trim();
+      }
+      saveChannels(true, false);
       playBeep("high");
       dispatchToBackground(
         {
@@ -2366,23 +3888,22 @@
       $("logsContainer").innerHTML = '<div class="muted">暂无告警记录（冷却记录已重置）</div>';
     });
 
-    const textFields = [
+    // 普通监控参数字段
+    const monitorTextFields = [
       "roiHeaderKeyword",
       "costHeaderKeyword",
       "nameHeaderKeyword",
       "minCost",
       "lowerLimit",
       "upperLimit",
+      "budgetWarnPercent",
+      "overallCostLimit",
+      "singleCostLimit",
       "cooldownMinutes",
       "refreshIntervalSec",
       "staleMinutes",
-      "wecomWebhook",
-      "wecomMobiles",
-      "pushplusToken",
-      "customWebhook",
-      "barkUrl",
     ];
-    textFields.forEach((key) => {
+    monitorTextFields.forEach((key) => {
       $(key).addEventListener("input", (e) => {
         config[key] = e.target.value;
         saveConfig();
@@ -2390,8 +3911,53 @@
       });
     });
 
-    const checkFields = ["onlyDelivering", "autoClickRefresh", "anomalyAlertEnabled", "desktopEnabled", "soundEnabled"];
-    checkFields.forEach((key) => {
+    // 5 大推送渠道文本字段：监听 input / change / blur，实时写入三层持久化存储并记住历史记录
+    CHANNEL_STRING_FIELDS.forEach((key) => {
+      const inputEl = $(key);
+      const handleChannelUpdate = (recordHistory) => {
+        config[key] = inputEl.value.trim();
+        saveChannels(recordHistory, false);
+      };
+      inputEl.addEventListener("input", () => handleChannelUpdate(false));
+      inputEl.addEventListener("change", () => handleChannelUpdate(true));
+      inputEl.addEventListener("blur", () => handleChannelUpdate(true));
+
+      const chipsBox = $(`chips_${key}`);
+      if (chipsBox) {
+        chipsBox.addEventListener("click", (e) => {
+          const chip = e.target.closest?.(".history-chip");
+          if (!chip) return;
+          const idx = Number(chip.dataset.idx);
+          const list = config.channelHistory?.[key] || [];
+          const picked = list[idx];
+          if (!picked) return;
+          config[key] = picked;
+          inputEl.value = picked;
+          saveChannels(true, false);
+          showToast("已切换到已记住的推送配置并保存", 2000);
+        });
+      }
+    });
+
+    $("abnormalList").addEventListener("click", (e) => {
+      const card = e.target.closest?.(".abnormal-item");
+      if (!card) return;
+      const idx = Number(card.dataset.idx);
+      if (Number.isInteger(idx)) {
+        focusAbnormalItem(idx);
+      }
+    });
+
+    const monitorCheckFields = [
+      "onlyDelivering",
+      "onlyRegulating",
+      "highlightAbnormalRows",
+      "costAlertEnabled",
+      "markExpiredGuarantee",
+      "autoClickRefresh",
+      "anomalyAlertEnabled",
+    ];
+    monitorCheckFields.forEach((key) => {
       $(key).addEventListener("change", (e) => {
         config[key] = e.target.checked;
         saveConfig();
@@ -2402,28 +3968,184 @@
         }
       });
     });
+
+    CHANNEL_BOOL_FIELDS.forEach((key) => {
+      $(key).addEventListener("change", (e) => {
+        config[key] = e.target.checked;
+        saveChannels(false, false);
+        if ((key === "pushOnLow" || key === "pushOnHigh" || key === "pushOnCost" || key === "pushOnExpired") && config.enabled) {
+          evaluateNow();
+        }
+      });
+    });
+  }
+
+  // 多标签页实时同步：在任意千川标签页修改推送渠道，其他标签页立即更新，绝不互相覆盖
+  if (isExtensionAlive() && chrome.storage?.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== "local" && areaName !== "sync") return;
+      const chChange = changes[CHANNELS_STORAGE_KEY];
+      if (!chChange || !chChange.newValue) return;
+      const incoming = chChange.newValue;
+      const incomingTs = Number(incoming.updatedAt || 0);
+      if (incomingTs <= lastChannelsUpdatedAt) return;
+      lastChannelsUpdatedAt = incomingTs;
+      for (const f of CHANNEL_STRING_FIELDS) {
+        if (typeof incoming[f] === "string") config[f] = incoming[f];
+      }
+      for (const f of CHANNEL_BOOL_FIELDS) {
+        if (typeof incoming[f] === "boolean") config[f] = incoming[f];
+      }
+      config.channelHistory = mergeHistoryMaps(incoming.channelHistory, config.channelHistory);
+      try {
+        window.localStorage.setItem(CHANNELS_BACKUP_KEY, JSON.stringify(incoming));
+      } catch {
+        // ignore
+      }
+      applyChannelsToInputs(true);
+    });
   }
 
   // 响应点击浏览器扩展图标切换面板
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg?.type === "TOGGLE_PANEL") {
-      setPanelOpen(!isExpanded);
-    } else if (msg?.type === "OPEN_PANEL") {
-      setPanelOpen(true);
-    }
-  });
+  if (isExtensionAlive() && chrome.runtime?.onMessage) {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg?.type === "TOGGLE_PANEL") {
+        setPanelOpen(!isExpanded);
+      } else if (msg?.type === "OPEN_PANEL") {
+        setPanelOpen(true);
+      }
+    });
+  }
 
-  // 初始化
-  bindEvents();
-  chrome.storage.local.get([STORAGE_KEY], (res) => {
-    if (res && res[STORAGE_KEY]) {
-      config = { ...DEFAULT_CONFIG, ...res[STORAGE_KEY] };
-      // 自动升级旧默认 ROI 列关键词以优先支持千川乘方「综合营销ROI」
-      if (config.roiHeaderKeyword === PREV_DEFAULT_ROI_KEYWORD) {
-        config.roiHeaderKeyword = DEFAULT_CONFIG.roiHeaderKeyword;
-        saveConfig();
+  // 读取三层持久化存储并合并（chrome.storage.local + chrome.storage.sync + localStorage 灾备 + 旧版配置平滑迁移）
+  async function hydrateConfigAndStart() {
+    let localRes = {};
+    let syncRes = {};
+    let backupChannels = null;
+
+    if (isExtensionAlive()) {
+      localRes = await new Promise((resolve) => {
+        try {
+          chrome.storage.local.get([STORAGE_KEY, CHANNELS_STORAGE_KEY], (r) => resolve(r || {}));
+        } catch {
+          resolve({});
+        }
+      });
+      syncRes = await new Promise((resolve) => {
+        try {
+          if (chrome.storage.sync) {
+            chrome.storage.sync.get([CHANNELS_STORAGE_KEY], (r) => resolve(r || {}));
+          } else {
+            resolve({});
+          }
+        } catch {
+          resolve({});
+        }
+      });
+    }
+
+    try {
+      const rawBackup = window.localStorage.getItem(CHANNELS_BACKUP_KEY);
+      if (rawBackup) backupChannels = JSON.parse(rawBackup);
+    } catch {
+      backupChannels = null;
+    }
+
+    const legacyCfg = localRes?.[STORAGE_KEY] || null;
+    if (legacyCfg) {
+      config = { ...config, ...legacyCfg };
+    }
+
+    // 汇总 4 个来源的推送渠道，按 updatedAt 最新优先；若是旧版首次迁移（updatedAt=0）则用非空值补齐
+    const legacyChannels = legacyCfg
+      ? {
+          wecomWebhook: legacyCfg.wecomWebhook || "",
+          wecomMobiles: legacyCfg.wecomMobiles || "",
+          pushplusToken: legacyCfg.pushplusToken || "",
+          customWebhook: legacyCfg.customWebhook || "",
+          barkUrl: legacyCfg.barkUrl || "",
+          desktopEnabled: legacyCfg.desktopEnabled ?? true,
+          soundEnabled: legacyCfg.soundEnabled ?? true,
+          updatedAt: 0,
+        }
+      : null;
+
+    const channelSources = [localRes?.[CHANNELS_STORAGE_KEY], syncRes?.[CHANNELS_STORAGE_KEY], backupChannels, legacyChannels]
+      .filter((s) => s && typeof s === "object")
+      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+
+    if (channelSources.length > 0) {
+      const primary = channelSources[0];
+      lastChannelsUpdatedAt = Number(primary.updatedAt || 0);
+      for (const f of CHANNEL_STRING_FIELDS) {
+        let val = typeof primary[f] === "string" ? primary[f].trim() : "";
+        // 如果最新源尚未初始化（updatedAt===0）且为空，则从其他备份里找非空值兜底
+        if (!val && lastChannelsUpdatedAt === 0) {
+          for (const alt of channelSources.slice(1)) {
+            if (typeof alt[f] === "string" && alt[f].trim()) {
+              val = alt[f].trim();
+              break;
+            }
+          }
+        }
+        config[f] = val;
+      }
+      for (const f of CHANNEL_BOOL_FIELDS) {
+        if (typeof primary[f] === "boolean") {
+          config[f] = primary[f];
+        }
+      }
+      // 兼容旧版未单独保存 pushOnLow / pushOnHigh / pushOnCost / pushOnExpired 时设置默认值
+      if (typeof primary.pushOnLow !== "boolean") config.pushOnLow = true;
+      if (typeof primary.pushOnHigh !== "boolean") config.pushOnHigh = true;
+      if (typeof primary.pushOnCost !== "boolean") config.pushOnCost = true;
+      if (typeof primary.pushOnExpired !== "boolean") config.pushOnExpired = false;
+      config.channelHistory = mergeHistoryMaps(
+        ...channelSources.map((s) => s.channelHistory),
+        ...channelSources.map((s) => {
+          const singleMap = {};
+          for (const f of CHANNEL_STRING_FIELDS) {
+            if (typeof s[f] === "string" && s[f].trim()) singleMap[f] = [s[f].trim()];
+          }
+          return singleMap;
+        })
+      );
+
+      // 若任一存储层落后（如刚从 localStorage 恢复或首次从旧版迁移），自动回填同步到全部三层
+      const localTs = Number(localRes?.[CHANNELS_STORAGE_KEY]?.updatedAt || 0);
+      const syncTs = Number(syncRes?.[CHANNELS_STORAGE_KEY]?.updatedAt || 0);
+      if (lastChannelsUpdatedAt === 0 || localTs < lastChannelsUpdatedAt || syncTs < lastChannelsUpdatedAt) {
+        saveChannels(true, false);
       }
     }
+
+    isConfigHydrated = true;
+
+    // 自动升级旧默认列关键词（覆盖乘方/调控任务表）
+    let migrated = false;
+    if (
+      config.roiHeaderKeyword === PREV_DEFAULT_ROI_KEYWORD ||
+      config.roiHeaderKeyword === "综合营销ROI,整体支付ROI,直接支付ROI,支付ROI,ROI"
+    ) {
+      config.roiHeaderKeyword = DEFAULT_CONFIG.roiHeaderKeyword;
+      migrated = true;
+    }
+    if (config.costHeaderKeyword === "整体消耗,消耗") {
+      config.costHeaderKeyword = DEFAULT_CONFIG.costHeaderKeyword;
+      migrated = true;
+    }
+    if (PREV_DEFAULT_NAME_KEYWORDS.includes(config.nameHeaderKeyword)) {
+      config.nameHeaderKeyword = DEFAULT_CONFIG.nameHeaderKeyword;
+      migrated = true;
+    }
+    // 首次升级到含「仅调控中」版本时，将「仅投放中」与「仅调控中」同步设为默认勾选
+    if (!legacyCfg || typeof legacyCfg.onlyRegulating !== "boolean") {
+      config.onlyDelivering = true;
+      config.onlyRegulating = true;
+      migrated = true;
+    }
+    if (migrated) saveConfig();
+
     applyConfigToInputs();
     if (config.enabled) {
       startMonitoring();
@@ -2431,5 +4153,9 @@
     if (location.href.endsWith("demo.html")) {
       setPanelOpen(true);
     }
-  });
+  }
+
+  // 初始化
+  bindEvents();
+  hydrateConfigAndStart();
 })();

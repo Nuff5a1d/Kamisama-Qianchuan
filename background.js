@@ -35,7 +35,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function handleDispatchAlert(payload) {
-  const { title, summary, detailLines, channels, level } = payload;
+  const { title, summary, detailLines, level } = payload;
+  let channels = { ...(payload.channels || {}) };
+  // 兜底：若页面侧有未同步或空字段，自动从 chrome.storage.local 持久化渠道补齐
+  try {
+    const stored = await chrome.storage.local.get(["qc_roi_monitor_channels_v1"]);
+    const saved = stored?.qc_roi_monitor_channels_v1;
+    if (saved) {
+      if (channels.desktop === undefined) channels.desktop = Boolean(saved.desktopEnabled);
+      if (!channels.wecomWebhook && saved.wecomWebhook) channels.wecomWebhook = saved.wecomWebhook;
+      if (!channels.wecomMobiles && saved.wecomMobiles) channels.wecomMobiles = saved.wecomMobiles;
+      if (!channels.pushplusToken && saved.pushplusToken) channels.pushplusToken = saved.pushplusToken;
+      if (!channels.customWebhook && saved.customWebhook) channels.customWebhook = saved.customWebhook;
+      if (!channels.barkUrl && saved.barkUrl) channels.barkUrl = saved.barkUrl;
+    }
+  } catch {
+    // 忽略读取异常，继续使用传入配置
+  }
   const results = [];
   const plainText = [title, summary, ...(detailLines || [])].filter(Boolean).join("\n");
   const markdownText = [
