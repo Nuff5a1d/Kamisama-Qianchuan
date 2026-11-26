@@ -94,7 +94,27 @@
         <button id="autoTickBtn" onclick="toggleAutoTick()">开启自动随机跳数</button>
       </div>
     </div>
-    <div class="card" style="grid-column: span 2;">
+    <!-- 模拟千川乘方 Aurora 深度嵌套指标卡（整数与小数拆分 + 紧邻涨跌幅） -->
+    <div class="card aurora-kpi-card">
+      <div class="aurora-kpi-body">
+        <div class="aurora-kpi-left">
+          <div class="aurora-title-row">
+            <div class="aurora-tooltip-wrap">
+              <div class="aurora-ellipsis"><span>综合营销ROI</span></div>
+            </div>
+          </div>
+          <div class="card-row aurora-val-row" id="chengfangRoi">
+            <span class="aurora-int">4</span><span class="aurora-dec" style="font-size:16px;">.74</span>
+            <span class="card-trend aurora-trend">-0.21%</span>
+          </div>
+        </div>
+      </div>
+      <div class="actions">
+        <button onclick="setChengfangRoi(1.25)">乘方跌破 (1.25)</button>
+        <button onclick="setChengfangRoi(4.74)">乘方恢复 (4.74)</button>
+      </div>
+    </div>
+    <div class="card">
       <div class="card-label">页面异常提醒测试</div>
       <div class="actions" style="margin-top:12px;">
         <button onclick="toggleLoginModal(true)">模拟登录态失效弹窗</button>
@@ -212,6 +232,11 @@
       document.getElementById("liveRoi").innerHTML =
         `<span class="oc-promotion-metric-card-number-val"><span class="oc-typography-value-int">${intPart}</span></span>` +
         `<span class="oc-promotion-metric-card-number-tail"><span class="oc-typography-value-int oc-typography-value-slot">.</span><span class="oc-typography-value-int">${decPart}</span></span>`;
+    }
+    function setChengfangRoi(val) {
+      const [intPart, decPart] = Number(val).toFixed(2).split(".");
+      document.getElementById("chengfangRoi").innerHTML =
+        `<span class="aurora-int">${intPart}</span><span class="aurora-dec" style="font-size:16px;">.${decPart}</span><span class="card-trend aurora-trend">-0.21%</span>`;
     }
     function toggleAutoTick() {
       const btn = document.getElementById("autoTickBtn");

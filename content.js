@@ -7,12 +7,14 @@
   window.__QC_ROI_MONITOR_LOADED__ = true;
 
   const STORAGE_KEY = "qc_roi_monitor_config_v1";
+  const PREV_DEFAULT_ROI_KEYWORD = "整体支付ROI,直接支付ROI,支付ROI,ROI";
   const DEFAULT_CONFIG = {
     enabled: false,
     mode: "both", // "both" | "single" | "table"
     selector: "",
     selectorLabel: "",
-    roiHeaderKeyword: "整体支付ROI,直接支付ROI,支付ROI,ROI",
+    pageBindings: {}, // { [origin+pathname]: { selector, label } }
+    roiHeaderKeyword: "综合营销ROI,整体支付ROI,直接支付ROI,支付ROI,ROI",
     costHeaderKeyword: "整体消耗,消耗",
     nameHeaderKeyword: "计划",
     minCost: 100,
@@ -34,7 +36,7 @@
   };
 
   const ROI_EXCLUDE_RE = /(目标|出价|设置|预期|建议|保本|门槛|最低)/i;
-  const ROI_PREFER_RE = /(整体支付|直接支付|支付roi|成交roi|整体roi|当日roi|实时roi)/i;
+  const ROI_PREFER_RE = /(综合营销|整体支付|直接支付|直播间支付|直播间成交|支付roi|成交roi|整体roi|全场roi|当日roi|实时roi)/i;
   const COST_EXCLUDE_RE = /(成本|预算|出价|门槛|补贴|评分|roi)/i;
   const NAME_EXCLUDE_RE = /(状态|设置|操作|工具|类型|方式|时段|时间|出价|预算|消耗|roi|订单|金额|成本|补贴|评分)/i;
   const SUMMARY_ROW_TEXT_RE = /^(合计|总计|汇总|小计|全部合计|当前页合计|筛选合计|总览|共\s*\d+\s*条)/;
@@ -68,6 +70,8 @@
     hadValidData: false,
     dataMissingSince: 0,
     lastAnomalyCheckAt: 0,
+    lastAutoBindAt: 0,
+    lastPageKey: "",
     lastScanMeta: null,
     activeAnomalies: [],
   };
@@ -209,7 +213,7 @@
         <div class="title">
           <span class="dot" id="headerDot"></span>
           <span>千川 ROI 实时监控</span>
-          <span class="version-tag">v1.1.2</span>
+          <span class="version-tag">v1.1.3</span>
         </div>
         <button class="icon-btn" id="collapseBtn">收起</button>
       </div>
@@ -493,7 +497,35 @@
     return list.length > 0 ? list : [fallback.toLowerCase()];
   }
 
-  // 读取元素数值文本：兼容千川指标卡整数/小数拆分为多个 span（如 .oc-promotion-metric-card-number -> "2" + "." + "94"）
+  function getPageBindingKey() {
+    return `${location.origin}${location.pathname}`;
+  }
+
+  function getActivePageBinding() {
+    const key = getPageBindingKey();
+    const map = config.pageBindings && typeof config.pageBindings === "object" ? config.pageBindings : {};
+    if (map[key] && map[key].selector) {
+      return map[key];
+    }
+    if (config.selector) {
+      return { selector: config.selector, label: config.selectorLabel || "" };
+    }
+    return { selector: "", label: "" };
+  }
+
+  function setActivePageBinding(selector, label) {
+    const key = getPageBindingKey();
+    if (!config.pageBindings || typeof config.pageBindings !== "object") {
+      config.pageBindings = {};
+    }
+    config.pageBindings[key] = { selector, label };
+    config.selector = selector;
+    config.selectorLabel = label;
+    saveConfig();
+    renderSelectorPreview();
+  }
+
+  // 读取元素数值文本：兼容千川全域/千川乘方 Aurora 等将整数与小数拆分为多个 span/div 的指标卡，并剔除同容器内的 % 涨跌幅
   function readElementMetricText(el) {
     if (!el) return "";
     if (
@@ -502,6 +534,42 @@
     ) {
       return String(el.textContent || "").replace(/\s+/g, "");
     }
+
+    const compact = String(el.textContent || "").replace(/[\s,，￥¥]/g, "");
+    if (/^-?\d+(?:\.\d+)?$/.test(compact)) {
+      return compact;
+    }
+
+    // 兼容整数 + 小数 + 涨跌幅(如 "-0.21%") 同处一个容器的布局，提取前置完整数字
+    if (el.children && el.children.length >= 2 && el.children.length <= 8) {
+      let acc = "";
+      for (const child of Array.from(el.childNodes)) {
+        if (child.nodeType === 1 && !isVisible(child)) continue;
+        const part = String(child.textContent || "").replace(/\s+/g, "");
+        if (!part) continue;
+        if (/%/.test(part) || /[^\d.,，￥¥-]/.test(part)) {
+          if (acc) break;
+          continue;
+        }
+        if (child.nodeType === 1) {
+          const cls = typeof child.className === "string" ? child.className : "";
+          if (/(trend|rate|ratio|percent|compare|diff|change|sub)/i.test(cls) && acc) {
+            break;
+          }
+        }
+        const candidate = (acc + part).replace(/[,，￥¥]/g, "");
+        if (/^-?\d*\.?\d*$/.test(candidate)) {
+          acc += part;
+        } else if (acc) {
+          break;
+        }
+      }
+      const cleanedAcc = acc.replace(/[,，￥¥]/g, "");
+      if (/^-?\d+(?:\.\d+)?$/.test(cleanedAcc)) {
+        return cleanedAcc;
+      }
+    }
+
     return String(el.innerText || el.textContent || "");
   }
 
@@ -541,9 +609,9 @@
       if (pure === matchedKw || compact === matchedKw) score += 100;
 
       if (type === "roi") {
-        if (/整体支付roi/.test(pure)) score += 90;
-        else if (/直接支付roi/.test(pure)) score += 75;
-        else if (/支付roi|成交roi/.test(pure)) score += 50;
+        if (/综合营销roi|整体支付roi/.test(pure)) score += 90;
+        else if (/直接支付roi|直播间支付roi|直播间成交roi/.test(pure)) score += 75;
+        else if (/支付roi|成交roi|全场roi/.test(pure)) score += 55;
         else if (ROI_PREFER_RE.test(pure)) score += 30;
       } else if (type === "cost") {
         if (/整体消耗|总消耗|消耗/.test(pure)) score += 50;
@@ -652,7 +720,54 @@
     return lines[0] || "";
   }
 
-  // ---------- 自动查找页面整体 ROI 元素（优先适配千川指标卡，避开表格表头、建议卡片与目标ROI） ----------
+  // ---------- 自动查找页面整体 ROI 元素（兼容千川全域 / 千川乘方 Aurora / 推直播间 / 标准投放 / 实时大屏） ----------
+  function findBestMetricElementInCard(container, labelEl) {
+    const rawEls = Array.from(container.querySelectorAll("*")).filter((el) => {
+      if (el === labelEl || el.contains(labelEl) || labelEl.contains(el) || !isVisible(el)) return false;
+      if (el.querySelector("table, thead, tbody, ul, ol")) return false;
+      if (el.closest("svg, canvas")) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.height > 96 || rect.width > 380 || rect.width < 8) return false;
+      const rawText = String(el.textContent || "").trim();
+      if (!rawText || rawText.length > 36) return false;
+      // 若自身就是纯百分比涨跌幅（如 -0.21% / +4.17%），直接排除
+      if (/^[+-]?\s*\d+(?:\.\d+)?\s*%$/.test(rawText)) return false;
+
+      const t = readElementMetricText(el).trim();
+      if (!t || t.length > 18 || /%/.test(t)) return false;
+      if (!/^\d+(?:,\d+)*(?:\.\d+)?$/.test(t)) return false;
+      return true;
+    });
+
+    if (rawEls.length === 0) return null;
+
+    rawEls.sort((a, b) => {
+      const ta = readElementMetricText(a);
+      const tb = readElementMetricText(b);
+      const hasDecA = ta.includes(".") ? 1 : 0;
+      const hasDecB = tb.includes(".") ? 1 : 0;
+      if (hasDecB !== hasDecA) return hasDecB - hasDecA;
+
+      const rawA = String(a.textContent || "").replace(/\s+/g, "");
+      const rawB = String(b.textContent || "").replace(/\s+/g, "");
+      const pureA = /^\d+(?:,\d+)*(?:\.\d+)?$/.test(rawA) ? 1 : 0;
+      const pureB = /^\d+(?:,\d+)*(?:\.\d+)?$/.test(rawB) ? 1 : 0;
+      if (pureB !== pureA) return pureB - pureA;
+
+      // 包含完整数字的更小/更紧凑节点优先（避开整行大容器）
+      const fa = parseFloat(getComputedStyle(a).fontSize) || 12;
+      const fb = parseFloat(getComputedStyle(b).fontSize) || 12;
+      if (Math.abs(fb - fa) >= 1) return fb - fa;
+
+      const depthA = a.querySelectorAll("*").length;
+      const depthB = b.querySelectorAll("*").length;
+      if (depthA !== depthB) return depthA - depthB;
+      return a.getBoundingClientRect().width - b.getBoundingClientRect().width;
+    });
+
+    return rawEls[0];
+  }
+
   function autoFindRoiElement() {
     // 1) 千川全域/专业版顶部指标卡精准直连（避免整数与小数拆分为两个 span 时只读到整数位）
     const directCardNum = document.querySelector(
@@ -670,19 +785,33 @@
       }
     }
 
-    const metricCards = Array.from(document.querySelectorAll(".oc-promotion-metric-card, .oc-statistic")).filter((c) =>
-      isVisible(c)
-    );
+    const metricCards = Array.from(
+      document.querySelectorAll(
+        ".oc-promotion-metric-card, .oc-statistic, [class*='metric-card'], [class*='kpi-card'], [class*='stat-card']"
+      )
+    ).filter((c) => isVisible(c));
     const preferredCardMatches = [];
     for (const card of metricCards) {
-      const titleEl = card.querySelector(".oc-statistic-title, [class*='title']");
+      const rect = card.getBoundingClientRect();
+      if (rect.width > 640 || rect.height > 280) continue;
+      const titleEl = card.querySelector(".oc-statistic-title, [class*='title'], [class*='label'], [class*='name']");
       const titleTxt = normalizeText(titleEl?.innerText || titleEl?.textContent);
-      if (!titleTxt || !/ROI/i.test(titleTxt) || ROI_EXCLUDE_RE.test(titleTxt)) continue;
-      const numBox = card.querySelector(".oc-promotion-metric-card-number, .oc-statistic-content");
+      if (!titleTxt || titleTxt.length > 26 || !/ROI/i.test(titleTxt) || ROI_EXCLUDE_RE.test(titleTxt) || /建议/.test(titleTxt)) {
+        continue;
+      }
+      const numBox =
+        card.querySelector(".oc-promotion-metric-card-number, .oc-statistic-content") ||
+        findBestMetricElementInCard(card, titleEl);
       if (!numBox || !isVisible(numBox)) continue;
       const valText = readElementMetricText(numBox);
       if (parseMetricNumber(valText) === null) continue;
-      const score = /整体支付ROI/i.test(titleTxt) ? 100 : /直接支付ROI|支付ROI/i.test(titleTxt) ? 80 : 50;
+      const score = /综合营销ROI|整体支付ROI/i.test(titleTxt)
+        ? 100
+        : /直接支付ROI|直播间支付ROI|直播间成交ROI/i.test(titleTxt)
+          ? 85
+          : /支付ROI|成交ROI|全场ROI/i.test(titleTxt)
+            ? 70
+            : 50;
       preferredCardMatches.push({
         el: numBox,
         selector: buildUniqueSelector(numBox),
@@ -696,27 +825,29 @@
       return preferredCardMatches[0];
     }
 
-    // 2) 通用网页回退扫描
+    // 2) 通用网页 & 千川乘方 Aurora / 实时大屏回退扫描（支持最多 8 层标题包裹 + 拆分的整数/小数节点）
     const candidates = [];
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     let node;
     while ((node = walker.nextNode())) {
       const txt = normalizeText(node.textContent);
-      if (!txt || txt.length > 24 || !/ROI/i.test(txt)) continue;
+      if (!txt || txt.length > 26 || !/ROI/i.test(txt)) continue;
       const parent = node.parentElement;
       if (!parent || !isVisible(parent)) continue;
       if (
         parent.closest(
-          "table, thead, tbody, [role='table'], [role='grid'], [role='columnheader'], [class*='table-head'], [class*='table-header']"
+          "table, thead, tbody, [role='table'], [role='grid'], [role='columnheader'], [class*='table-head'], [class*='table-header'], [class*='table-body']"
         )
       ) {
         continue;
       }
-      if (ROI_EXCLUDE_RE.test(txt) || /建议/.test(txt)) continue;
+      if (ROI_EXCLUDE_RE.test(txt) || /建议|说明|调整为/.test(txt)) continue;
 
       let labelScore = 10;
-      if (/整体支付ROI|直接支付ROI/i.test(txt)) labelScore += 80;
-      else if (/支付ROI|成交ROI|整体ROI/i.test(txt)) labelScore += 50;
+      if (/综合营销ROI|整体支付ROI/i.test(txt)) labelScore += 90;
+      else if (/直接支付ROI|直播间支付ROI|直播间成交ROI/i.test(txt)) labelScore += 80;
+      else if (/支付ROI|成交ROI|整体ROI|全场ROI|千川ROI/i.test(txt)) labelScore += 55;
+      if (txt.length <= 12) labelScore += 10;
       candidates.push({ el: parent, label: txt, score: labelScore });
     }
 
@@ -724,31 +855,12 @@
 
     for (const item of candidates) {
       let container = item.el.parentElement;
-      for (let depth = 0; depth < 4 && container; depth++) {
+      for (let depth = 0; depth < 8 && container && container !== document.body; depth++) {
         const rect = container.getBoundingClientRect();
-        if (rect.width >= 80 && rect.width <= 520 && rect.height >= 40 && rect.height <= 240) {
-          const numEls = Array.from(container.querySelectorAll("*")).filter((el) => {
-            if (el === item.el || el.contains(item.el) || !isVisible(el)) return false;
-            const t = readElementMetricText(el).trim();
-            if (!t || t.length > 16 || /%/.test(t)) return false;
-            if (!/^\d+(?:,\d+)*(?:\.\d+)?$/.test(t)) return false;
-            return el.children.length === 0 || el.querySelectorAll("div, p, table").length === 0;
-          });
-
-          if (numEls.length > 0) {
-            // 优先选包含小数点的完整数值容器（避免选中拆分后的纯整数子 span）
-            numEls.sort((a, b) => {
-              const ta = readElementMetricText(a);
-              const tb = readElementMetricText(b);
-              const hasDecA = ta.includes(".") ? 1 : 0;
-              const hasDecB = tb.includes(".") ? 1 : 0;
-              if (hasDecB !== hasDecA) return hasDecB - hasDecA;
-              const fa = parseFloat(getComputedStyle(a).fontSize) || 12;
-              const fb = parseFloat(getComputedStyle(b).fontSize) || 12;
-              if (fb !== fa) return fb - fa;
-              return a.children.length - b.children.length;
-            });
-            const target = numEls[0];
+        if (rect.width > 640 || rect.height > 280) break;
+        if (rect.width >= 80 && rect.height >= 36) {
+          const target = findBestMetricElementInCard(container, item.el);
+          if (target) {
             return {
               el: target,
               selector: buildUniqueSelector(target),
@@ -1129,6 +1241,7 @@
       if (roiIdx === -1) continue;
 
       const costIdx = findBestColumnIndex(headerTexts, config.costHeaderKeyword, "cost");
+      const statusIdx = findBestColumnIndex(headerTexts, "计划状态,投放状态,状态", "status");
       let nameIdx = findBestColumnIndex(headerTexts, config.nameHeaderKeyword, "name");
       if (nameIdx === -1) nameIdx = 0;
 
@@ -1169,12 +1282,15 @@
         const costCell =
           costIdx >= 0 ? findRowCellByColumn(band.cells, costIdx, headerInfos[costIdx].rect) : null;
         const costVal = costCell ? parseMetricNumber(costCell.innerText || costCell.textContent) : null;
+        const statusCell =
+          statusIdx >= 0 ? findRowCellByColumn(band.cells, statusIdx, headerInfos[statusIdx].rect) : null;
+        const statusText = extractPlanStatus(statusCell);
         const nameCell = findRowCellByColumn(band.cells, nameIdx, headerInfos[nameIdx]?.rect) || band.cells[0];
         const ident = extractPlanIdentity(nameCell, band.rowEl, idx);
 
         if (!seen.has(ident.id)) {
           seen.add(ident.id);
-          rowsResult.push({ id: ident.id, name: ident.name, roi: roiVal, cost: costVal });
+          rowsResult.push({ id: ident.id, name: ident.name, status: statusText, roi: roiVal, cost: costVal });
         }
       });
 
@@ -1284,10 +1400,12 @@
       const roiIdx = findBestColumnIndex(headerTexts, config.roiHeaderKeyword, "roi");
       if (roiIdx === -1) continue;
       const costIdx = findBestColumnIndex(headerTexts, config.costHeaderKeyword, "cost");
+      const statusIdx = findBestColumnIndex(headerTexts, "计划状态,投放状态,状态", "status");
       const nameIdx = findBestColumnIndex(headerTexts, config.nameHeaderKeyword, "name");
 
       const roiHeader = peerHeaders[roiIdx];
       const costHeader = costIdx >= 0 ? peerHeaders[costIdx] : null;
+      const statusHeader = statusIdx >= 0 ? peerHeaders[statusIdx] : null;
       const nameHeader = nameIdx >= 0 ? peerHeaders[nameIdx] : peerHeaders[0];
 
       // 收集表头下方的数据行元素
@@ -1367,12 +1485,15 @@
         const costCell = costHeader ? findRowCellByColumn(allCells, -1, costHeader.rect) : null;
         const costVal = costCell ? parseMetricNumber(costCell.innerText || costCell.textContent) : null;
 
+        const statusCell = statusHeader ? findRowCellByColumn(allCells, -1, statusHeader.rect) : null;
+        const statusText = extractPlanStatus(statusCell);
+
         const nameCell = (nameHeader ? findRowCellByColumn(allCells, -1, nameHeader.rect) : null) || allCells[0];
         const ident = extractPlanIdentity(nameCell, primaryRow, idx);
 
         if (!seen.has(ident.id)) {
           seen.add(ident.id);
-          rowsResult.push({ id: ident.id, name: ident.name, roi: roiVal, cost: costVal });
+          rowsResult.push({ id: ident.id, name: ident.name, status: statusText, roi: roiVal, cost: costVal });
         }
       });
 
@@ -1677,6 +1798,16 @@
   function evaluateNow() {
     if (!config.enabled) return;
 
+    // 检测 SPA 路由切换，自动刷新当前页绑定展示
+    const curPageKey = getPageBindingKey();
+    if (healthState.lastPageKey && healthState.lastPageKey !== curPageKey) {
+      healthState.lastPageKey = curPageKey;
+      healthState.lastAutoBindAt = 0;
+      renderSelectorPreview();
+    } else if (!healthState.lastPageKey) {
+      healthState.lastPageKey = curPageKey;
+    }
+
     const wantSingle = config.mode === "both" || config.mode === "single";
     const wantTable = config.mode === "both" || config.mode === "table";
 
@@ -1687,31 +1818,44 @@
     let singleFp = "";
 
     if (wantSingle) {
-      if (!config.selector) {
+      let binding = getActivePageBinding();
+      let el = binding.selector ? document.querySelector(binding.selector) : null;
+      let val = el ? parseMetricNumber(readElementMetricText(el)) : null;
+
+      // 当前页未绑定、切页后失效或异步指标卡刚渲染完成时，每 3 秒自动重探一次整体 ROI 指标卡
+      if (!el || val === null) {
+        const nowTs = Date.now();
+        if (nowTs - healthState.lastAutoBindAt >= 3000) {
+          healthState.lastAutoBindAt = nowTs;
+          const found = autoFindRoiElement();
+          if (found) {
+            setActivePageBinding(found.selector, found.label);
+            binding = { selector: found.selector, label: found.label };
+            el = found.el;
+            val = parseMetricNumber(found.value);
+          }
+        }
+      }
+
+      if (!binding.selector) {
         singleStatus = "warn";
         singleValueText = "未绑定";
         singleSubText = "整体ROI未绑定";
+      } else if (!el) {
+        singleStatus = "warn";
+        singleValueText = "未找到";
+        singleSubText = "整体ROI暂不在当前视图";
+      } else if (val === null) {
+        singleStatus = "warn";
+        singleValueText = "无数字";
+        singleSubText = `读取到：${normalizeText(readElementMetricText(el)).slice(0, 16)}`;
       } else {
-        const el = document.querySelector(config.selector);
-        if (!el) {
-          singleStatus = "warn";
-          singleValueText = "未找到";
-          singleSubText = "整体ROI暂不在当前视图";
-        } else {
-          const val = parseMetricNumber(readElementMetricText(el));
-          if (val === null) {
-            singleStatus = "warn";
-            singleValueText = "无数字";
-            singleSubText = `读取到：${normalizeText(readElementMetricText(el)).slice(0, 16)}`;
-          } else {
-            const label = config.selectorLabel || "整体 ROI";
-            singleStatus = checkAndAlert("single_roi", label, val);
-            singleValueText = String(val);
-            singleSubText = `${label}: ${val}`;
-            singleValid = true;
-            singleFp = `S:${val}`;
-          }
-        }
+        const label = binding.label || "整体 ROI";
+        singleStatus = checkAndAlert("single_roi", label, val);
+        singleValueText = String(val);
+        singleSubText = `${label}: ${val}`;
+        singleValid = true;
+        singleFp = `S:${val}`;
       }
     }
 
@@ -1837,12 +1981,36 @@
         role: el.getAttribute("role"),
         rows: el.querySelectorAll("[role='row'], tr, [class*='row']").length,
       }));
+    const roiCardHints = [];
+    const roiWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let rNode;
+    while ((rNode = roiWalker.nextNode()) && roiCardHints.length < 6) {
+      const t = normalizeText(rNode.textContent);
+      if (!t || t.length > 26 || !/ROI/i.test(t) || ROI_EXCLUDE_RE.test(t)) continue;
+      const p = rNode.parentElement;
+      if (!p || !isVisible(p) || p.closest("table, thead, tbody, [role='table'], [role='grid']")) continue;
+      const chain = [];
+      let cur = p;
+      let cardSample = "";
+      for (let d = 0; d < 6 && cur && cur !== document.body; d++) {
+        const r = cur.getBoundingClientRect();
+        const cls = typeof cur.className === "string" ? cur.className.trim().slice(0, 50) : "";
+        chain.push(`${cur.tagName.toLowerCase()}${cls ? "." + cls.split(/\s+/).slice(0, 2).join(".") : ""}(${Math.round(r.width)}x${Math.round(r.height)})`);
+        if (!cardSample && r.width >= 80 && r.width <= 600 && r.height >= 40 && r.height <= 260) {
+          cardSample = normalizeText(cur.innerText || cur.textContent).slice(0, 80);
+        }
+        cur = cur.parentElement;
+      }
+      roiCardHints.push({ label: t, chain, cardSample });
+    }
+
     const scanRes = scanCampaignTables();
     const autoRoi = autoFindRoiElement();
     return {
-      version: "1.1.2",
+      version: "1.1.3",
       urlPath: location.origin + location.pathname,
       autoOverallRoi: autoRoi ? { label: autoRoi.label, value: autoRoi.value, selector: autoRoi.selector } : null,
+      roiCardHints,
       scanMeta: scanRes.meta,
       scannedCount: scanRes.rows.length,
       sampleScanned: scanRes.rows.slice(0, 3),
@@ -1959,10 +2127,28 @@
       let target = hoveredEl || e.target;
       cleanup();
 
-      // 若点中了千川指标卡拆分的整数或小数子 span，自动提升到完整的数字容器 .oc-promotion-metric-card-number
+      // 若点中了千川指标卡拆分的整数或小数子 span（全域或乘方 Aurora 通用），自动提升到完整数值容器
       const metricNumBox = target?.closest?.(".oc-promotion-metric-card-number");
       if (metricNumBox) {
         target = metricNumBox;
+      } else {
+        let cur = target;
+        const curVal = readElementMetricText(cur).trim();
+        if (!/^\d+(?:,\d+)*\.\d+$/.test(curVal)) {
+          for (let up = 0; up < 3 && cur && cur.parentElement && cur.parentElement !== document.body; up++) {
+            const p = cur.parentElement;
+            if (p.querySelector("table, svg, canvas") || p.getBoundingClientRect().height > 96) break;
+            const pVal = readElementMetricText(p).trim();
+            if (/^\d+(?:,\d+)*\.\d+$/.test(pVal)) {
+              cur = p;
+              break;
+            }
+            cur = p;
+          }
+          if (/^\d+(?:,\d+)*\.\d+$/.test(readElementMetricText(cur).trim())) {
+            target = cur;
+          }
+        }
       }
 
       const sel =
@@ -1971,10 +2157,8 @@
           : buildUniqueSelector(target);
       const rawMetricText = readElementMetricText(target);
       const val = parseMetricNumber(rawMetricText);
-      config.selector = sel;
-      config.selectorLabel = metricNumBox ? "整体支付ROI" : `已选元素(${normalizeText(rawMetricText).slice(0, 12)})`;
-      saveConfig();
-      renderSelectorPreview();
+      const label = metricNumBox ? "整体支付ROI" : `已选元素(${normalizeText(rawMetricText).slice(0, 12)})`;
+      setActivePageBinding(sel, label);
       if (val === null) {
         showToast("已绑定元素，但当前文本里没看到数字，请确认是否选准了数值节点", 4500);
       } else {
@@ -2028,10 +2212,12 @@
 
   function renderSelectorPreview() {
     const box = $("selectorPreview");
-    if (config.selector) {
-      box.innerHTML = `已绑定：<span class="mono">${escapeHtml(config.selector)}</span>`;
+    const binding = getActivePageBinding();
+    if (binding.selector) {
+      const labelPrefix = binding.label ? `${escapeHtml(binding.label)} → ` : "";
+      box.innerHTML = `已绑定：${labelPrefix}<span class="mono">${escapeHtml(binding.selector)}</span>`;
     } else {
-      box.textContent = "尚未绑定页面元素（点击上方按钮后，在网页上点一下 ROI 数字）";
+      box.textContent = "尚未绑定整体 ROI（可自动查找，或点左侧按钮直接点页面数字）";
     }
   }
 
@@ -2115,12 +2301,12 @@
       if (config.enabled) {
         stopMonitoring(true);
       } else {
-        if ((config.mode === "single" || config.mode === "both") && !config.selector) {
+        const activeBinding = getActivePageBinding();
+        const existingEl = activeBinding.selector ? document.querySelector(activeBinding.selector) : null;
+        if ((config.mode === "single" || config.mode === "both") && !existingEl) {
           const found = autoFindRoiElement();
           if (found) {
-            config.selector = found.selector;
-            config.selectorLabel = found.label;
-            renderSelectorPreview();
+            setActivePageBinding(found.selector, found.label);
             showToast(`已自动识别「${found.label}」(${found.value}) 并开始监控`, 3500);
           } else if (config.mode === "single") {
             showToast("请先点选页面上的 ROI 数字，或切到“整体+多计划”模式", 4000);
@@ -2138,10 +2324,7 @@
     $("autoFindRoiBtn").addEventListener("click", () => {
       const found = autoFindRoiElement();
       if (found) {
-        config.selector = found.selector;
-        config.selectorLabel = found.label;
-        saveConfig();
-        renderSelectorPreview();
+        setActivePageBinding(found.selector, found.label);
         showToast(`自动识别成功：${found.label} = ${found.value}`, 3500);
         if (config.enabled) evaluateNow();
       } else {
@@ -2235,6 +2418,11 @@
   chrome.storage.local.get([STORAGE_KEY], (res) => {
     if (res && res[STORAGE_KEY]) {
       config = { ...DEFAULT_CONFIG, ...res[STORAGE_KEY] };
+      // 自动升级旧默认 ROI 列关键词以优先支持千川乘方「综合营销ROI」
+      if (config.roiHeaderKeyword === PREV_DEFAULT_ROI_KEYWORD) {
+        config.roiHeaderKeyword = DEFAULT_CONFIG.roiHeaderKeyword;
+        saveConfig();
+      }
     }
     applyConfigToInputs();
     if (config.enabled) {
