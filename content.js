@@ -9,6 +9,8 @@
   const STORAGE_KEY = "qc_roi_monitor_config_v1";
   const CHANNELS_STORAGE_KEY = "qc_roi_monitor_channels_v1";
   const CHANNELS_BACKUP_KEY = "qc_roi_monitor_channels_backup_v1";
+  const COOLDOWN_STORAGE_KEY = "qc_roi_monitor_cooldowns_v1";
+  const COOLDOWN_BACKUP_KEY = "qc_roi_monitor_cooldowns_backup_v1";
   const CHANNEL_STRING_FIELDS = ["wecomWebhook", "wecomMobiles", "pushplusToken", "customWebhook", "barkUrl"];
   const AI_STRING_FIELDS = ["aiProvider", "aiApiKey", "aiModel", "aiEndpoint"];
   const CHANNEL_BOOL_FIELDS = ["desktopEnabled", "soundEnabled", "pushOnLow", "pushOnHigh", "pushOnCost", "pushOnExpired"];
@@ -38,7 +40,7 @@
     markExpiredGuarantee: true,
     abnormalSort: "table", // "table" | "extreme"
     abnormalFilter: "all", // "all" | "low" | "high" | "cost" | "expired"
-    compactMode: false,
+    compactMode: true,
     landscapeMode: false,
     collapsedSections: {
       sec_summary: false,
@@ -56,6 +58,11 @@
     overallCostLimit: "",
     singleCostLimit: "",
     cooldownMinutes: 10,
+    lowCooldownMin: 30,
+    highCooldownMin: 30,
+    costCooldownMin: 3,
+    expiredPushMode: "once", // "once" | "3times" | "repeat"
+    mergeBatchAlerts: true,
     summaryReportEnabled: true,
     summaryIntervalMin: 30,
     autoClickRefresh: false,
@@ -467,8 +474,53 @@
       display: none; position: relative;
     }
     .panel.open { display: block; }
-    .panel.compact .config-section { display: none !important; }
+    .panel.compact .config-section,
+    .panel.compact .config-only { display: none !important; }
+    .panel:not(.compact) .dashboard-only { display: none !important; }
     .panel.compact .abnormal-list { max-height: 420px; }
+    .view-switcher {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 5px;
+      background: #0d111a; border: 1px solid #242c42; border-radius: 10px; padding: 4px;
+    }
+    .view-tab {
+      display: flex; align-items: center; justify-content: center; gap: 5px;
+      padding: 6px 10px; border-radius: 7px; border: 1px solid transparent;
+      background: transparent; color: #94a3b8; font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: all 0.15s ease;
+    }
+    .view-tab:hover { color: #e2e8f0; background: #161d2e; }
+    .view-tab.active {
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: #ffffff; border-color: #3b82f6;
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+    }
+    .kpi-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    }
+    .panel.landscape .kpi-grid {
+      grid-template-columns: repeat(4, 1fr);
+    }
+    .kpi-card {
+      background: #1a2133; border: 1px solid #28324a; border-radius: 10px;
+      padding: 9px 11px; display: flex; flex-direction: column; gap: 3px; min-width: 0;
+    }
+    .kpi-label { font-size: 11px; color: #8c98b3; display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+    .kpi-value { font-size: 18px; font-weight: 800; color: #f8fafc; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .kpi-value.ok { color: #4ade80; }
+    .kpi-value.low { color: #f87171; }
+    .kpi-value.high { color: #fb923c; }
+    .kpi-value.warn { color: #c084fc; }
+    .kpi-sub { font-size: 10.5px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .kpi-bar { width: 100%; height: 4px; background: #0f1422; border-radius: 999px; overflow: hidden; margin-top: 2px; }
+    .kpi-bar-fill { height: 100%; width: 0%; background: #38bdf8; border-radius: 999px; transition: width 0.25s ease; }
+    .kpi-bar-fill.warn { background: #a855f7; }
+    .kpi-bar-fill.hit { background: #ef4444; }
+    .config-done-bar {
+      display: flex; justify-content: center; padding-top: 2px;
+    }
+    .config-done-btn {
+      width: 100%; padding: 8px 12px; font-size: 12px; font-weight: 700;
+    }
     .panel.landscape {
       width: min(860px, 94vw);
       max-height: 88vh;
@@ -841,12 +893,12 @@
         <div class="title">
           <span class="dot" id="headerDot"></span>
           <span>Kamisama - 全链路千川</span>
-          <span class="version-tag">v1.3.1</span>
+          <span class="version-tag">v1.3.2</span>
         </div>
         <div class="header-actions">
           <button class="icon-btn contact-btn" id="contactAuthorBtn" type="button" title="展开并跳转到底部联系作者区">联系作者</button>
           <button class="icon-btn" id="landscapeModeBtn" title="切换横屏宽版 / 竖屏窄版布局">横屏</button>
-          <button class="icon-btn" id="compactModeBtn" title="折叠下方配置区，专注巡检异常计划与总结报告">极简</button>
+          <button class="icon-btn" id="compactModeBtn" title="切换日常盯盘（简洁版）与参数配置界面">配置</button>
           <button class="icon-btn" id="collapseBtn">收起</button>
         </div>
       </div>
@@ -860,8 +912,38 @@
           <button class="btn btn-success" id="toggleMonitorBtn">开始监控</button>
         </div>
 
+        <div class="view-switcher" id="viewSwitcher">
+          <button class="view-tab active" id="viewDashboardBtn" type="button">📊 日常盯盘</button>
+          <button class="view-tab" id="viewConfigBtn" type="button">⚙️ 参数配置</button>
+        </div>
+
+        <!-- 日常盯盘核心数据看板（消耗 / ROI / 预算水位 / 计划健康一眼盯盘） -->
+        <div class="kpi-grid dashboard-only" id="dashboardKpiGrid">
+          <div class="kpi-card">
+            <div class="kpi-label"><span id="dashRoiLabel">整体 ROI</span><span id="dashRoiDelta"></span></div>
+            <div class="kpi-value" id="dashRoiVal">--</div>
+            <div class="kpi-sub" id="dashRoiSub">等待读取页面 ROI</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label"><span id="dashCostLabel">当前消耗</span><span id="dashCostDelta"></span></div>
+            <div class="kpi-value" id="dashCostVal">--</div>
+            <div class="kpi-sub" id="dashCostSub">自动识别整体/列表消耗</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label"><span>预算水位</span><span id="dashBudgetPct">--</span></div>
+            <div class="kpi-value" id="dashBudgetVal">--</div>
+            <div class="kpi-bar"><div class="kpi-bar-fill" id="dashBudgetBar"></div></div>
+            <div class="kpi-sub" id="dashBudgetSub">自动监测预算撞墙风险</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label"><span>在投巡检</span><span id="dashHealthTag">待启动</span></div>
+            <div class="kpi-value" id="dashPlanCount">--</div>
+            <div class="kpi-sub" id="dashPlanBreakdown">跌破0 · 撞墙0 · 过保0 · 高ROI 0</div>
+          </div>
+        </div>
+
         <!-- 异常计划明细（默认严格按表格从上到下顺序排列，支持上一条/下一条与类型筛选） -->
-        <div class="abnormal-box" id="abnormalBox">
+        <div class="abnormal-box dashboard-only" id="abnormalBox">
           <div class="section-title">
             <span id="abnormalBoxTitle">异常/重点计划明细</span>
             <label class="check-row" style="font-size:11px;font-weight:500;">
@@ -890,7 +972,7 @@
         </div>
 
         <!-- 面板内直显：30分钟投流总结报告（有AI Key走豆包/DeepSeek等深度诊断，无Key走内置趋势规则引擎） -->
-        <div class="section summary-section" data-sec="sec_summary" id="sec_summary">
+        <div class="section summary-section dashboard-only" data-sec="sec_summary" id="sec_summary">
           <div class="section-title collapsible-head" data-sec-toggle="sec_summary">
             <span class="sec-head-left">
               <span class="sec-chevron">▾</span>
@@ -985,15 +1067,36 @@
             </span>
           </div>
           <div class="sec-body">
-            <div class="grid-3">
+            <div class="grid-2">
               <label class="field">ROI下限(跌破)
                 <input type="number" step="0.01" id="lowerLimit" placeholder="如 1.5">
               </label>
               <label class="field">ROI上限(突破)
                 <input type="number" step="0.01" id="upperLimit" placeholder="如 4.0">
               </label>
-              <label class="field">冷却(分钟)
-                <input type="number" min="0" step="1" id="cooldownMinutes" placeholder="10">
+            </div>
+            <div class="grid-3">
+              <label class="field" title="跌破下限后同计划多久内不重复推（刷新不重置）">跌破冷却(分)
+                <input type="number" min="1" step="5" id="lowCooldownMin" placeholder="30">
+              </label>
+              <label class="field" title="突破上限后同计划多久内不重复推（刷新不重置）">突破冷却(分)
+                <input type="number" min="1" step="5" id="highCooldownMin" placeholder="30">
+              </label>
+              <label class="field" title="预算快撞墙/已撞墙紧急提醒间隔，最低1分钟防限流">撞墙急推(分)
+                <input type="number" min="1" step="1" id="costCooldownMin" placeholder="3">
+              </label>
+            </div>
+            <div class="grid-2">
+              <label class="field">过保推送次数(当天)
+                <select id="expiredPushMode">
+                  <option value="once">仅推送 1 次（推荐）</option>
+                  <option value="3times">最多推送 3 次（间隔30分）</option>
+                  <option value="repeat">每 30 分钟持续提醒</option>
+                </select>
+              </label>
+              <label class="check-row" style="align-self:end;padding-bottom:6px;" title="同一轮扫描有多条计划同时触发时合并为1条摘要消息推送">
+                <input type="checkbox" id="mergeBatchAlerts">
+                <span>多计划同轮合并推送</span>
               </label>
             </div>
             <div class="row-between" style="flex-wrap:wrap;gap:6px;margin-top:2px;">
@@ -1201,13 +1304,13 @@
         </div>
 
         <!-- 5. 实时告警记录（可独立折叠） -->
-        <div class="section logs-section" data-sec="sec_logs" id="sec_logs">
+        <div class="section logs-section dashboard-only" data-sec="sec_logs" id="sec_logs">
           <div class="section-title collapsible-head" data-sec-toggle="sec_logs">
             <span class="sec-head-left">
               <span class="sec-chevron">▾</span>
               <span class="sec-label">5. 实时告警记录</span>
             </span>
-            <button class="btn btn-ghost btn-sm" id="clearLogsBtn">清空</button>
+            <button class="btn btn-ghost btn-sm" id="clearLogsBtn" title="清空当前记录并重置推送冷却">清空</button>
           </div>
           <div class="sec-body">
             <div class="logs" id="logsContainer">
@@ -1216,6 +1319,10 @@
           </div>
         </div>
         </div><!-- /sectionsGrid -->
+
+        <div class="config-done-bar config-only">
+          <button class="btn btn-primary config-done-btn" id="finishConfigBtn" type="button">✅ 配置完成，返回日常盯盘</button>
+        </div>
 
         <!-- 底部联系作者区（默认折叠，点击顶栏「联系作者」或本栏标题展开；点微信号弹出二维码） -->
         <div class="section feedback-footer collapsed" data-sec="sec_author" id="feedbackFooter">
@@ -2879,6 +2986,115 @@
     box.className = `health-bar${level === "warn" ? " warn" : level === "error" ? " error" : ""}`;
   }
 
+  // ---------- 跨刷新/多标签持久化冷却表（修掉刷新重推，按自然日自动清理） ----------
+  let lastCooldownSyncTs = 0;
+
+  function getLocalDayKey() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  function pruneCooldownMap() {
+    const today = getLocalDayKey();
+    const now = Date.now();
+    for (const [k, v] of cooldownMap.entries()) {
+      if (!v || !v.ts || (v.day && v.day !== today) || now - v.ts > 24 * 60 * 60 * 1000) {
+        cooldownMap.delete(k);
+      }
+    }
+  }
+
+  function persistCooldownMap() {
+    pruneCooldownMap();
+    const today = getLocalDayKey();
+    const entries = {};
+    for (const [k, v] of cooldownMap.entries()) {
+      entries[k] = { ts: v.ts, count: v.count || 1, direction: v.direction || "", day: v.day || today };
+    }
+    const payload = { day: today, updatedAt: Date.now(), entries };
+    lastCooldownSyncTs = payload.updatedAt;
+    try {
+      window.localStorage.setItem(COOLDOWN_BACKUP_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore
+    }
+    if (isExtensionAlive() && chrome.storage?.local) {
+      try {
+        chrome.storage.local.set({ [COOLDOWN_STORAGE_KEY]: payload });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  function clearPersistedCooldowns() {
+    cooldownMap.clear();
+    const payload = { day: getLocalDayKey(), updatedAt: Date.now(), entries: {} };
+    lastCooldownSyncTs = payload.updatedAt;
+    try {
+      window.localStorage.setItem(COOLDOWN_BACKUP_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore
+    }
+    if (isExtensionAlive() && chrome.storage?.local) {
+      try {
+        chrome.storage.local.set({ [COOLDOWN_STORAGE_KEY]: payload });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  function applyCooldownPayload(payload) {
+    if (!payload || typeof payload !== "object") return;
+    const today = getLocalDayKey();
+    if (payload.day && payload.day !== today) return;
+    const entries = payload.entries && typeof payload.entries === "object" ? payload.entries : {};
+    const now = Date.now();
+    for (const [k, v] of Object.entries(entries)) {
+      if (!v || !v.ts || now - v.ts > 24 * 60 * 60 * 1000) continue;
+      const prev = cooldownMap.get(k);
+      if (!prev || v.ts > prev.ts || (v.count || 0) > (prev.count || 0)) {
+        cooldownMap.set(k, {
+          ts: Number(v.ts),
+          count: Number(v.count || 1),
+          direction: String(v.direction || ""),
+          day: v.day || today,
+        });
+      }
+    }
+  }
+
+  async function hydrateCooldownMap() {
+    let localPayload = null;
+    try {
+      const raw = window.localStorage.getItem(COOLDOWN_BACKUP_KEY);
+      if (raw) localPayload = JSON.parse(raw);
+    } catch {
+      // ignore
+    }
+    let storagePayload = null;
+    if (isExtensionAlive() && chrome.storage?.local) {
+      storagePayload = await new Promise((resolve) => {
+        try {
+          chrome.storage.local.get([COOLDOWN_STORAGE_KEY], (res) => {
+            if (chrome.runtime?.lastError) resolve(null);
+            else resolve(res?.[COOLDOWN_STORAGE_KEY] || null);
+          });
+        } catch {
+          resolve(null);
+        }
+      });
+    }
+    if (localPayload) applyCooldownPayload(localPayload);
+    if (storagePayload) applyCooldownPayload(storagePayload);
+    pruneCooldownMap();
+    lastCooldownSyncTs = Math.max(Number(localPayload?.updatedAt || 0), Number(storagePayload?.updatedAt || 0));
+  }
+
   function triggerAnomalyAlert(item) {
     const cooldownMs = Math.max(5, Number(config.cooldownMinutes || 10)) * 60 * 1000;
     const last = cooldownMap.get(item.key);
@@ -2886,7 +3102,8 @@
     if (last && now - last.ts < cooldownMs) {
       return;
     }
-    cooldownMap.set(item.key, { ts: now, direction: item.level });
+    cooldownMap.set(item.key, { ts: now, count: (last?.count || 0) + 1, direction: item.level, day: getLocalDayKey() });
+    persistCooldownMap();
 
     const detailLines = [
       `检测时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
@@ -2904,8 +3121,67 @@
     });
   }
 
-  // ---------- 阈值判断与推送 ----------
-  function checkAndAlert(targetKey, label, roiVal, extraLines = []) {
+  // ---------- 同轮多计划合并推送（减少刷屏与通道限流） ----------
+  function flushAlertBatch(batchQueue) {
+    if (!Array.isArray(batchQueue) || batchQueue.length === 0) return;
+    const groups = new Map();
+    for (const item of batchQueue) {
+      const gKey = item.category;
+      if (!groups.has(gKey)) groups.set(gKey, []);
+      groups.get(gKey).push(item);
+    }
+
+    const groupTitleMap = {
+      low: "⚠️ ROI 跌破下限提醒",
+      high: "🔥 ROI 突破上限提醒",
+      cost_hit: "🚨 预算已撞墙（请加预算）",
+      cost_warn: "⚡ 预算快撞墙（请加预算）",
+      expired: "⚠️ 计划已过保提醒（防跑偏/跑飞）",
+    };
+
+    const timeStr = new Date().toLocaleString("zh-CN", { hour12: false });
+    for (const [category, items] of groups.entries()) {
+      if (items.length === 1) {
+        const it = items[0];
+        playBeep(it.beepLevel);
+        pushLog(it.logLevel, it.summary);
+        dispatchToBackground({
+          title: it.title,
+          summary: it.summary,
+          detailLines: it.detailLines,
+          level: it.pushLevel,
+        });
+        continue;
+      }
+
+      const first = items[0];
+      const baseTitle = groupTitleMap[category] || first.title;
+      const title = `${baseTitle}（共 ${items.length} 条）`;
+      const previewNames = items
+        .slice(0, 3)
+        .map((it) => it.shortLabel || it.label)
+        .join("、");
+      const summary = `${previewNames}${items.length > 3 ? ` 等 ${items.length} 条计划` : ""} 触发${baseTitle.replace(/^[^\u4e00-\u9fa5]+/, "")}`;
+      const detailLines = [
+        `触发时间：${timeStr}`,
+        ...items.slice(0, 10).map((it, idx) => `${idx + 1}. ${it.compactLine || it.summary}`),
+        ...(items.length > 10 ? [`…其余 ${items.length - 10} 条请查看面板「异常/重点计划明细」`] : []),
+        `页面标题：${document.title || "监控页面"}`,
+      ];
+
+      playBeep(first.beepLevel);
+      pushLog(first.logLevel, `${title}：${previewNames}${items.length > 3 ? "等" : ""}`);
+      dispatchToBackground({
+        title,
+        summary,
+        detailLines,
+        level: first.pushLevel,
+      });
+    }
+  }
+
+  // ---------- 阈值判断与推送（跌破/突破独立冷却 + 临界点防抖 + 持久化不因刷新重推） ----------
+  function checkAndAlert(targetKey, label, roiVal, extraLines = [], batchQueue = null) {
     const lower = config.lowerLimit !== "" && config.lowerLimit !== null ? Number(config.lowerLimit) : null;
     const upper = config.upperLimit !== "" && config.upperLimit !== null ? Number(config.upperLimit) : null;
 
@@ -2929,13 +3205,20 @@
       return direction;
     }
 
-    const cooldownMs = Math.max(0, Number(config.cooldownMinutes || 0)) * 60 * 1000;
-    const last = cooldownMap.get(targetKey);
+    // 分方向独立键 + 严格锁满冷却时间（避免临界点 1.49↔1.51 反复横跳刷屏，也免疫页面刷新重推）
+    const cdKey = `${targetKey}:${direction}`;
+    const cdMin =
+      direction === "low"
+        ? Math.max(1, Number(config.lowCooldownMin ?? 30))
+        : Math.max(1, Number(config.highCooldownMin ?? 30));
+    const cooldownMs = cdMin * 60 * 1000;
+    const last = cooldownMap.get(cdKey);
     const now = Date.now();
-    if (last && last.direction === direction && now - last.ts < cooldownMs) {
+    if (last && now - last.ts < cooldownMs) {
       return direction;
     }
-    cooldownMap.set(targetKey, { ts: now, direction });
+    cooldownMap.set(cdKey, { ts: now, count: (last?.count || 0) + 1, direction, day: getLocalDayKey() });
+    persistCooldownMap();
 
     const isLow = direction === "low";
     const title = isLow ? "⚠️ ROI 跌破下限提醒" : "🔥 ROI 突破上限提醒";
@@ -2943,18 +3226,36 @@
     const detailLines = [
       `触发时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
       ...extraLines,
+      `冷却策略：同类 ${cdMin} 分钟内不重复推送`,
       `页面标题：${document.title || "监控页面"}`,
     ];
 
-    playBeep(direction);
-    pushLog(direction, `${summary}`);
-    dispatchToBackground({ title, summary, detailLines, level: direction });
+    const alertObj = {
+      category: direction,
+      label,
+      shortLabel: label.replace(/^计划「|」$/g, ""),
+      title,
+      summary,
+      compactLine: `${label} ROI=${roiVal}（${isLow ? `<${threshold}` : `>${threshold}`}）${extraLines[0] ? ` · ${extraLines[0]}` : ""}`,
+      detailLines,
+      beepLevel: direction,
+      logLevel: direction,
+      pushLevel: direction,
+    };
+
+    if (batchQueue && config.mergeBatchAlerts !== false) {
+      batchQueue.push(alertObj);
+    } else {
+      playBeep(direction);
+      pushLog(direction, summary);
+      dispatchToBackground({ title, summary, detailLines, level: direction });
+    }
 
     return direction;
   }
 
-  // ---------- 消耗即将撞线 / 已撞线 判断与推送 ----------
-  function checkAndAlertCost(targetKey, label, costVal, capVal, extraLines = []) {
+  // ---------- 消耗即将撞线 / 已撞线 判断与推送（紧急高频推送，默认每3分钟催一次直到加预算） ----------
+  function checkAndAlertCost(targetKey, label, costVal, capVal, extraLines = [], batchQueue = null) {
     if (!config.costAlertEnabled) return { state: "ok", pct: 0 };
     if (costVal === null || capVal === null || !Number.isFinite(costVal) || !Number.isFinite(capVal) || capVal <= 0) {
       return { state: "ok", pct: 0 };
@@ -2971,15 +3272,17 @@
       return { state, pct };
     }
 
-    // 即将撞线(80%)与已撞线(100%)分键冷却：80%提醒后，真正到100%仍立即强提醒一次
+    // 即将撞线(80%)与已撞线(100%)分键冷却：80%提醒后，真正到100%仍立即强提醒一次；默认每3分钟急推一次（最低1分钟防限流）
     const cdKey = `${targetKey}:${state}`;
-    const cooldownMs = Math.max(0, Number(config.cooldownMinutes || 0)) * 60 * 1000;
+    const cdMin = Math.max(1, Number(config.costCooldownMin ?? 3));
+    const cooldownMs = cdMin * 60 * 1000;
     const last = cooldownMap.get(cdKey);
     const now = Date.now();
     if (last && now - last.ts < cooldownMs) {
       return { state, pct };
     }
-    cooldownMap.set(cdKey, { ts: now, direction: state });
+    cooldownMap.set(cdKey, { ts: now, count: (last?.count || 0) + 1, direction: state, day: getLocalDayKey() });
+    persistCooldownMap();
 
     const remain = Math.max(0, capVal - costVal);
     const title = isHit ? "🚨 预算已撞墙（请加预算）" : "⚡ 预算快撞墙（请加预算）";
@@ -2988,40 +3291,83 @@
       : `${label} 消耗 ${formatCostDisplay(costVal)} / 预算 ${formatCostDisplay(capVal)}（已烧 ${pct.toFixed(1)}%，仅剩 ${formatCostDisplay(remain)}，快撞墙请加预算）`;
     const detailLines = [
       `触发时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
-      `撞墙预警比例：${warnPct}%`,
+      `撞墙预警比例：${warnPct}%（紧急提醒每 ${cdMin} 分钟一次，加预算后自动停止）`,
       ...extraLines,
       `页面标题：${document.title || "监控页面"}`,
     ];
 
-    const beepLevel = isHit ? "low" : "warn";
-    playBeep(beepLevel);
-    pushLog(isHit ? "low" : "warn", summary);
-    dispatchToBackground({ title, summary, detailLines, level: isHit ? "error" : "warn" });
+    const alertObj = {
+      category: state,
+      label,
+      shortLabel: label.replace(/^计划「|」$/g, ""),
+      title,
+      summary,
+      compactLine: `${label} 已烧 ${pct.toFixed(0)}%（${formatCostDisplay(costVal)}/${formatCostDisplay(capVal)}）`,
+      detailLines,
+      beepLevel: isHit ? "low" : "warn",
+      logLevel: isHit ? "low" : "warn",
+      pushLevel: isHit ? "error" : "warn",
+    };
+
+    if (batchQueue && config.mergeBatchAlerts !== false) {
+      batchQueue.push(alertObj);
+    } else {
+      playBeep(alertObj.beepLevel);
+      pushLog(alertObj.logLevel, summary);
+      dispatchToBackground({ title, summary, detailLines, level: alertObj.pushLevel });
+    }
 
     return { state, pct };
   }
 
-  // ---------- 过保计划可选提醒（默认仅表格黄色标记，勾选「过保提醒」后才发提醒） ----------
-  function checkAndAlertExpired(targetKey, label, guaranteeState, extraLines = []) {
+  // ---------- 过保计划可选提醒（支持仅推1次 / 最多3次 / 持续每30分钟，跨刷新记忆） ----------
+  function checkAndAlertExpired(targetKey, label, guaranteeState, extraLines = [], batchQueue = null) {
     if (!config.pushOnExpired) return;
     const cdKey = `expired:${targetKey}`;
-    const cooldownMs = Math.max(15, Number(config.cooldownMinutes || 10)) * 60 * 1000;
+    const mode = config.expiredPushMode || "once";
     const last = cooldownMap.get(cdKey);
     const now = Date.now();
-    if (last && now - last.ts < cooldownMs) return;
-    cooldownMap.set(cdKey, { ts: now, direction: "expired" });
+    const prevCount = Number(last?.count || 0);
+    const repeatMs = 30 * 60 * 1000;
+
+    if (mode === "once" && prevCount >= 1) return;
+    if (mode === "3times" && (prevCount >= 3 || (last && now - last.ts < repeatMs))) return;
+    if (mode === "repeat" && last && now - last.ts < repeatMs) return;
+
+    const nextCount = prevCount + 1;
+    cooldownMap.set(cdKey, { ts: now, count: nextCount, direction: "expired", day: getLocalDayKey() });
+    persistCooldownMap();
 
     const tagText = guaranteeState === "expired" ? "已过赔付保障期（灰保）" : "无赔付保障（过保）";
+    const countSuffix = mode === "3times" ? `（第 ${nextCount}/3 次）` : mode === "once" ? "（当天仅推1次）" : "";
     const title = "⚠️ 计划已过保提醒（防跑偏/跑飞）";
-    const summary = `${label} 当前${tagText}，建议重点盯盘防止跑偏跑飞`;
+    const summary = `${label} 当前${tagText}${countSuffix}，建议重点盯盘防止跑偏跑飞`;
     const detailLines = [
       `检测时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
       ...extraLines,
       `页面标题：${document.title || "监控页面"}`,
     ];
-    playBeep("warn");
-    pushLog("warn", summary);
-    dispatchToBackground({ title, summary, detailLines, level: "warn" });
+
+    const alertObj = {
+      category: "expired",
+      label,
+      shortLabel: label.replace(/^计划「|」$/g, ""),
+      title,
+      summary,
+      compactLine: `${label} ${tagText}${countSuffix}${extraLines[0] ? ` · ${extraLines[0]}` : ""}`,
+      detailLines,
+      beepLevel: "warn",
+      logLevel: "warn",
+      pushLevel: "warn",
+    };
+
+    if (batchQueue && config.mergeBatchAlerts !== false) {
+      batchQueue.push(alertObj);
+    } else {
+      playBeep("warn");
+      pushLog("warn", summary);
+      dispatchToBackground({ title, summary, detailLines, level: "warn" });
+    }
   }
 
   // ---------- 趋势采样器（每分钟记录一次快照，支撑近30分钟趋势预判、单计划涨跌与预计撞墙倒计时） ----------
@@ -3496,6 +3842,7 @@
     let singleStatus = "idle";
     let singleValueText = "--";
     let singleSubText = "";
+    const batchQueue = [];
     let singleValid = false;
     let singleFp = "";
     let singleNumericVal = null;
@@ -3549,7 +3896,7 @@
         singleSubText = `读取到：${normalizeText(readElementMetricText(el)).slice(0, 16)}`;
       } else {
         const label = binding.label || "整体 ROI";
-        singleStatus = checkAndAlert("single_roi", label, val);
+        singleStatus = checkAndAlert("single_roi", label, val, [], batchQueue);
         singleValueText = String(val);
         singleSubText = `${label}: ${val}`;
         singleValid = true;
@@ -3622,7 +3969,7 @@
             if (row.cost !== null) expExtra.push(`当前消耗：${formatCostDisplay(row.cost)}`);
             if (row.roi !== null) expExtra.push(`当前 ROI：${row.roi}`);
             if (row.status) expExtra.push(`状态：${row.status}`);
-            checkAndAlertExpired(row.id, `计划「${row.name}」`, row.guaranteeState, expExtra);
+            checkAndAlertExpired(row.id, `计划「${row.name}」`, row.guaranteeState, expExtra, batchQueue);
             abnormalItems.push({
               id: `${row.id}:expired`,
               rowOrder: rowIdx + 1,
@@ -3648,7 +3995,7 @@
               const costExtra = [];
               if (row.roi !== null) costExtra.push(`当前 ROI：${row.roi}`);
               if (row.status) costExtra.push(`状态：${row.status}`);
-              const costRes = checkAndAlertCost(`cost_row:${row.id}`, `计划「${row.name}」`, row.cost, cap, costExtra);
+              const costRes = checkAndAlertCost(`cost_row:${row.id}`, `计划「${row.name}」`, row.cost, cap, costExtra, batchQueue);
               if (costRes.state !== "ok") {
                 rowCostState = costRes.state;
                 costAlertCount++;
@@ -3688,7 +4035,7 @@
           if (row.cost !== null) extra.push(`当前消耗：${formatCostDisplay(row.cost)}`);
           if (row.budget) extra.push(`计划预算：${formatCostDisplay(row.budget)}`);
           if (row.status) extra.push(`状态：${row.status}`);
-          const st = checkAndAlert(`row:${row.id}`, `计划「${row.name}」`, row.roi, extra);
+          const st = checkAndAlert(`row:${row.id}`, `计划「${row.name}」`, row.roi, extra, batchQueue);
           if (st !== "ok") {
             alertCount++;
             worst = mergeStatus(worst, st);
@@ -3735,7 +4082,7 @@
     const overallCostBox = $("overallCostStatus");
     if (config.costAlertEnabled && overallCap) {
       if (foundOverallCost) {
-        const res = checkAndAlertCost("cost_overall", foundOverallCost.label || "整体消耗", foundOverallCost.value, overallCap);
+        const res = checkAndAlertCost("cost_overall", foundOverallCost.label || "整体消耗", foundOverallCost.value, overallCap, [], batchQueue);
         const remain = Math.max(0, overallCap - foundOverallCost.value);
         if (overallCostBox) {
           overallCostBox.textContent = `${foundOverallCost.label}：${formatCostDisplay(foundOverallCost.value)} / ${formatCostDisplay(overallCap)}（${res.pct.toFixed(1)}%，剩 ${formatCostDisplay(remain)}）`;
@@ -3755,6 +4102,9 @@
       overallCostBox.style.color = "#8c98b3";
     }
 
+    // 统一发送本轮触发的告警（单条直发，多条按类型合并为一条摘要）
+    flushAlertBatch(batchQueue);
+
     refreshAbnormalView(abnormalItems);
 
     // 记录最新快照并检查是否到达「定时投流总结报告」周期（默认每 30 分钟一次，免疫后台标签节流）
@@ -3767,17 +4117,17 @@
       abnormalItems,
       scanMeta: latestTableMeta,
     };
+    const totalRowCostCur = latestFilteredRows.reduce((acc, r) => acc + (r.cost || 0), 0);
+    const validRoiCur = latestFilteredRows.filter((r) => r.roi !== null);
+    const avgRoiCur =
+      validRoiCur.length > 0
+        ? Math.round((validRoiCur.reduce((a, r) => a + r.roi, 0) / validRoiCur.length) * 100) / 100
+        : null;
+    const curDisplayRoi = singleNumericVal !== null ? singleNumericVal : avgRoiCur;
+    const curEffCost = foundOverallCost ? foundOverallCost.value : totalRowCostCur > 0 ? totalRowCostCur : null;
     const hasValidDataForSummary = singleValid || tableValid;
     if (hasValidDataForSummary) {
       const nowSum = Date.now();
-      const totalRowCostCur = latestFilteredRows.reduce((acc, r) => acc + (r.cost || 0), 0);
-      const validRoiCur = latestFilteredRows.filter((r) => r.roi !== null);
-      const avgRoiCur =
-        validRoiCur.length > 0
-          ? Math.round((validRoiCur.reduce((a, r) => a + r.roi, 0) / validRoiCur.length) * 100) / 100
-          : null;
-      const curDisplayRoi = singleNumericVal !== null ? singleNumericVal : avgRoiCur;
-      const curEffCost = foundOverallCost ? foundOverallCost.value : totalRowCostCur > 0 ? totalRowCostCur : null;
       recordTrendSample(curDisplayRoi, curEffCost, latestFilteredRows);
 
       if (!healthState.lastSummarySnapshot) {
@@ -3797,6 +4147,18 @@
       }
     }
     updateSummaryNextHint();
+
+    // 更新日常盯盘 4 格核心数据看板（ROI / 消耗 / 预算水位 / 在投巡检）
+    updateDashboardKpiCards({
+      displayRoi: curDisplayRoi,
+      roiLabel: singleNumericVal !== null ? singleLabelText : "计划均 ROI",
+      roiStatus: singleStatus !== "idle" ? singleStatus : tableStatus,
+      effectiveCost: curEffCost,
+      costLabel: foundOverallCost ? foundOverallCost.label || "整体消耗" : "在投列表消耗",
+      overallCap,
+      filteredRows: latestFilteredRows,
+      abnormalItems,
+    });
 
     // 页面健康与断流监测
     const pageTimeTag = findPageUpdateTimeText();
@@ -3818,6 +4180,112 @@
     } else {
       updateDisplay(mergeStatus(mergeStatus(tableStatus, overallCostStatusLevel), anomalyLevel), tableValueText, `${tableSubText} · ${limitHint}`);
     }
+  }
+
+  function updateDashboardKpiCards({
+    displayRoi,
+    roiLabel,
+    roiStatus,
+    effectiveCost,
+    costLabel,
+    overallCap,
+    filteredRows,
+    abnormalItems,
+  }) {
+    const roiValEl = $("dashRoiVal");
+    if (!roiValEl) return;
+
+    const lower = config.lowerLimit !== "" && config.lowerLimit !== null ? Number(config.lowerLimit) : null;
+    const upper = config.upperLimit !== "" && config.upperLimit !== null ? Number(config.upperLimit) : null;
+    const baseSample = healthState.trendSamples?.[0] || healthState.lastSummarySnapshot || null;
+
+    // 1. 整体 / 均 ROI
+    $("dashRoiLabel").textContent = (roiLabel || "整体 ROI").slice(0, 10);
+    roiValEl.textContent = displayRoi !== null && displayRoi !== undefined ? String(displayRoi) : "--";
+    let roiCls = "";
+    if (displayRoi !== null && displayRoi !== undefined) {
+      if (lower !== null && Number.isFinite(lower) && displayRoi < lower) roiCls = " low";
+      else if (upper !== null && Number.isFinite(upper) && displayRoi > upper) roiCls = " high";
+      else roiCls = " ok";
+    }
+    roiValEl.className = `kpi-value${roiCls}`;
+    if (baseSample && baseSample.displayRoi !== null && baseSample.displayRoi !== undefined && displayRoi !== null) {
+      const diff = Math.round((displayRoi - baseSample.displayRoi) * 100) / 100;
+      $("dashRoiDelta").textContent = diff > 0 ? `▲+${diff}` : diff < 0 ? `▼${diff}` : "持平";
+      $("dashRoiDelta").style.color = diff > 0 ? "#4ade80" : diff < 0 ? "#f87171" : "#94a3b8";
+    } else {
+      $("dashRoiDelta").textContent = "";
+    }
+    $("dashRoiSub").textContent = `区间 [${config.lowerLimit || "-∞"} ~ ${config.upperLimit || "+∞"}]`;
+
+    // 2. 当前消耗
+    $("dashCostLabel").textContent = (costLabel || "当前消耗").slice(0, 10);
+    $("dashCostVal").textContent = effectiveCost !== null && effectiveCost !== undefined ? formatCostDisplay(effectiveCost) : "--";
+    if (baseSample && baseSample.effectiveCost !== null && baseSample.effectiveCost !== undefined && effectiveCost !== null) {
+      const burn = Math.max(0, effectiveCost - baseSample.effectiveCost);
+      $("dashCostDelta").textContent = burn > 0 ? `+${formatCostDisplay(burn)}` : "";
+      $("dashCostDelta").style.color = "#38bdf8";
+    } else {
+      $("dashCostDelta").textContent = "";
+    }
+    const validRoiRows = (filteredRows || []).filter((r) => r.roi !== null);
+    $("dashCostSub").textContent =
+      validRoiRows.length > 0
+        ? `在投 ${filteredRows.length} 条 · 门槛 ≥¥${Number(config.minCost || 0)}`
+        : "等待读取消耗数据";
+
+    // 3. 预算水位
+    const budgetRows = (filteredRows || []).filter((r) => r.budget && r.budget > 0);
+    const sumBudget = budgetRows.reduce((acc, r) => acc + (r.budget || 0), 0);
+    const sumBudgetCost = budgetRows.reduce((acc, r) => acc + (r.cost || 0), 0);
+    let usedCost = null;
+    let totalCap = null;
+    let budgetModeLabel = "";
+    if (overallCap && effectiveCost !== null) {
+      usedCost = effectiveCost;
+      totalCap = overallCap;
+      budgetModeLabel = "全店上限";
+    } else if (sumBudget > 0) {
+      usedCost = sumBudgetCost;
+      totalCap = sumBudget;
+      budgetModeLabel = `${budgetRows.length}条预算合计`;
+    }
+    const warnPct = Math.max(1, Math.min(100, Number(config.budgetWarnPercent || 80)));
+    const barFill = $("dashBudgetBar");
+    if (totalCap && totalCap > 0 && usedCost !== null) {
+      const pct = (usedCost / totalCap) * 100;
+      const remain = Math.max(0, totalCap - usedCost);
+      $("dashBudgetPct").textContent = `${pct.toFixed(0)}%`;
+      $("dashBudgetVal").textContent = `剩 ${formatCostDisplay(remain)}`;
+      $("dashBudgetVal").className = `kpi-value${pct >= 100 ? " low" : pct >= warnPct ? " warn" : ""}`;
+      $("dashBudgetSub").textContent = `${budgetModeLabel} ${formatCostDisplay(totalCap)}`;
+      if (barFill) {
+        barFill.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+        barFill.className = `kpi-bar-fill${pct >= 100 ? " hit" : pct >= warnPct ? " warn" : ""}`;
+      }
+    } else {
+      $("dashBudgetPct").textContent = "--";
+      $("dashBudgetVal").textContent = "--";
+      $("dashBudgetVal").className = "kpi-value";
+      $("dashBudgetSub").textContent = `预警线 ${warnPct}% · 未读到预算列`;
+      if (barFill) {
+        barFill.style.width = "0%";
+        barFill.className = "kpi-bar-fill";
+      }
+    }
+
+    // 4. 在投巡检概览
+    const items = abnormalItems || [];
+    const lowCnt = items.filter((i) => i.direction === "low").length;
+    const highCnt = items.filter((i) => i.direction === "high").length;
+    const costCnt = items.filter((i) => i.direction === "cost_warn" || i.direction === "cost_hit").length;
+    const expCnt = items.filter((i) => i.direction === "expired").length;
+    const riskCnt = lowCnt + costCnt;
+    $("dashPlanCount").textContent = `${(filteredRows || []).length} 条在投`;
+    $("dashPlanCount").className = `kpi-value${riskCnt > 0 ? " low" : highCnt > 0 ? " high" : " ok"}`;
+    $("dashHealthTag").textContent = riskCnt > 0 ? `${riskCnt}项风险` : "运行健康";
+    $("dashHealthTag").style.color = riskCnt > 0 ? "#f87171" : "#4ade80";
+    $("dashPlanBreakdown").textContent = `跌破${lowCnt} · 撞墙${costCnt} · 过保${expCnt} · 高ROI ${highCnt}`;
   }
 
   function tryClickPageRefresh() {
@@ -4318,6 +4786,7 @@
       const gridSecs = Array.from(grid.children).filter((el) => {
         if (!el.matches?.(".section[data-sec]")) return false;
         if (isCompact && el.classList.contains("config-section")) return false;
+        if (!isCompact && el.classList.contains("dashboard-only")) return false;
         return true;
       });
       const expanded = gridSecs.filter((el) => !el.classList.contains("collapsed"));
@@ -4334,7 +4803,11 @@
   function syncCompactMode() {
     const compact = Boolean(config.compactMode);
     $("panel").classList.toggle("compact", compact);
-    $("compactModeBtn").textContent = compact ? "配置" : "极简";
+    $("compactModeBtn").textContent = compact ? "配置" : "盯盘";
+    const dashTab = $("viewDashboardBtn");
+    const cfgTab = $("viewConfigBtn");
+    if (dashTab) dashTab.classList.toggle("active", compact);
+    if (cfgTab) cfgTab.classList.toggle("active", !compact);
     syncCollapsedSections();
   }
 
@@ -4699,7 +5172,11 @@
     $("budgetWarnPercent").value = config.budgetWarnPercent ?? "80";
     $("overallCostLimit").value = config.overallCostLimit ?? "";
     $("singleCostLimit").value = config.singleCostLimit ?? "";
-    $("cooldownMinutes").value = config.cooldownMinutes;
+    $("lowCooldownMin").value = config.lowCooldownMin ?? 30;
+    $("highCooldownMin").value = config.highCooldownMin ?? 30;
+    $("costCooldownMin").value = config.costCooldownMin ?? 3;
+    $("expiredPushMode").value = config.expiredPushMode || "once";
+    $("mergeBatchAlerts").checked = config.mergeBatchAlerts !== false;
     $("summaryReportEnabled").checked = config.summaryReportEnabled !== false;
     $("summaryIntervalMin").value = config.summaryIntervalMin ?? 30;
     $("refreshIntervalSec").value = config.refreshIntervalSec;
@@ -4717,6 +5194,12 @@
     switchMode(config.mode, false);
     updateSummaryNextHint();
     syncMonitorButton();
+  }
+
+  function setViewMode(isDashboard) {
+    config.compactMode = Boolean(isDashboard);
+    saveConfig();
+    syncCompactMode();
   }
 
   function bindEvents() {
@@ -4745,9 +5228,13 @@
       syncLandscapeMode();
     });
     $("compactModeBtn").addEventListener("click", () => {
-      config.compactMode = !config.compactMode;
-      saveConfig();
-      syncCompactMode();
+      setViewMode(!config.compactMode);
+    });
+    $("viewDashboardBtn")?.addEventListener("click", () => setViewMode(true));
+    $("viewConfigBtn")?.addEventListener("click", () => setViewMode(false));
+    $("finishConfigBtn")?.addEventListener("click", () => {
+      setViewMode(true);
+      showToast("已切换到日常盯盘简洁视图", 1800);
     });
 
     $("abnormalFilterGroup").addEventListener("click", (e) => {
@@ -4873,8 +5360,8 @@
 
     $("clearLogsBtn").addEventListener("click", () => {
       alertLogs = [];
-      cooldownMap.clear();
-      $("logsContainer").innerHTML = '<div class="muted">暂无告警记录（冷却记录已重置）</div>';
+      clearPersistedCooldowns();
+      $("logsContainer").innerHTML = '<div class="muted">暂无告警记录（跨页持久化冷却已重置）</div>';
     });
 
     const authorQrImg = $("authorQrImg");
@@ -5019,18 +5506,27 @@
       "budgetWarnPercent",
       "overallCostLimit",
       "singleCostLimit",
-      "cooldownMinutes",
+      "lowCooldownMin",
+      "highCooldownMin",
+      "costCooldownMin",
       "summaryIntervalMin",
       "refreshIntervalSec",
       "staleMinutes",
     ];
     monitorTextFields.forEach((key) => {
-      $(key).addEventListener("input", (e) => {
+      const el = $(key);
+      if (!el) return;
+      el.addEventListener("input", (e) => {
         config[key] = e.target.value;
         saveConfig();
         if (key === "summaryIntervalMin") updateSummaryNextHint();
         if (config.enabled) evaluateNow();
       });
+    });
+
+    $("expiredPushMode")?.addEventListener("change", (e) => {
+      config.expiredPushMode = e.target.value || "once";
+      saveConfig();
     });
 
     // 5 大推送渠道文本字段：监听 input / change / blur，实时写入三层持久化存储并记住历史记录
@@ -5076,12 +5572,15 @@
       "highlightAbnormalRows",
       "costAlertEnabled",
       "markExpiredGuarantee",
+      "mergeBatchAlerts",
       "summaryReportEnabled",
       "autoClickRefresh",
       "anomalyAlertEnabled",
     ];
     monitorCheckFields.forEach((key) => {
-      $(key).addEventListener("change", (e) => {
+      const el = $(key);
+      if (!el) return;
+      el.addEventListener("change", (e) => {
         config[key] = e.target.checked;
         saveConfig();
         if (key === "summaryReportEnabled") updateSummaryNextHint();
@@ -5104,10 +5603,28 @@
     });
   }
 
-  // 多标签页实时同步：在任意千川标签页修改推送渠道，其他标签页立即更新，绝不互相覆盖
+  // 多标签页实时同步：在任意千川标签页修改推送渠道或触发告警冷却，其他标签页立即更新，绝不互相覆盖或双倍推送
   if (isExtensionAlive() && chrome.storage?.onChanged) {
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== "local" && areaName !== "sync") return;
+      const cdChange = changes[COOLDOWN_STORAGE_KEY];
+      if (cdChange && cdChange.newValue && areaName === "local") {
+        const incCd = cdChange.newValue;
+        const incCdTs = Number(incCd.updatedAt || 0);
+        if (incCdTs > lastCooldownSyncTs) {
+          lastCooldownSyncTs = incCdTs;
+          if (!incCd.entries || Object.keys(incCd.entries).length === 0) {
+            cooldownMap.clear();
+          } else {
+            applyCooldownPayload(incCd);
+          }
+          try {
+            window.localStorage.setItem(COOLDOWN_BACKUP_KEY, JSON.stringify(incCd));
+          } catch {
+            // ignore
+          }
+        }
+      }
       const chChange = changes[CHANNELS_STORAGE_KEY];
       if (!chChange || !chChange.newValue) return;
       const incoming = chChange.newValue;
@@ -5290,7 +5807,27 @@
       config.migratedV131 = true;
       migrated = true;
     }
+    // 首次升级到 v1.3.2：默认进入「日常盯盘」简洁版，并初始化分级推送冷却策略
+    if (!legacyCfg || !legacyCfg.migratedV132) {
+      config.compactMode = true;
+      if (config.lowCooldownMin === undefined || config.lowCooldownMin === null || config.lowCooldownMin === "") {
+        config.lowCooldownMin = 30;
+      }
+      if (config.highCooldownMin === undefined || config.highCooldownMin === null || config.highCooldownMin === "") {
+        config.highCooldownMin = 30;
+      }
+      if (config.costCooldownMin === undefined || config.costCooldownMin === null || config.costCooldownMin === "") {
+        config.costCooldownMin = 3;
+      }
+      if (!config.expiredPushMode) config.expiredPushMode = "once";
+      if (typeof config.mergeBatchAlerts !== "boolean") config.mergeBatchAlerts = true;
+      config.migratedV132 = true;
+      migrated = true;
+    }
     if (migrated) saveConfig();
+
+    // 必须在启动监控前恢复跨刷新持久化冷却表，确保 F5 刷新绝不重推
+    await hydrateCooldownMap();
 
     applyConfigToInputs();
     if (config.enabled) {
