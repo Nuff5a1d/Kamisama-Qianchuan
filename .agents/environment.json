@@ -1,0 +1,3 @@
+{
+  "install": "sed -i '/case \\$- in/,/esac/d' ~/.bashrc 2>/dev/null || true; if ! command -v jq >/dev/null 2>&1 || ! command -v zip >/dev/null 2>&1; then sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq zip; fi && node --check background.js && node --check content.js && jq -e '.manifest_version == 3 and .name and .version' manifest.json >/dev/null && test -f icons/icon16.png -a -f icons/icon48.png -a -f icons/icon128.png"
+}
