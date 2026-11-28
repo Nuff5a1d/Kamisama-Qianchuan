@@ -33,7 +33,7 @@
     roiHeaderKeyword: "调控综合营销ROI,综合营销ROI,整体支付ROI,直接支付ROI,支付ROI,ROI",
     costHeaderKeyword: "调控消耗,整体消耗,消耗",
     nameHeaderKeyword: "计划,任务名称,抖音号,商品信息,商品,直播间,任务",
-    minCost: 100,
+    minCost: 20,
     onlyDelivering: true,
     onlyRegulating: true,
     highlightAbnormalRows: true,
@@ -41,7 +41,7 @@
     abnormalSort: "table", // "table" | "extreme"
     abnormalFilter: "all", // "all" | "low" | "high" | "cost" | "expired"
     compactMode: true,
-    landscapeMode: false,
+    landscapeMode: true,
     collapsedSections: {
       sec_summary: false,
       sec_target: false,
@@ -55,18 +55,21 @@
     upperLimit: "4.0",
     costAlertEnabled: true,
     budgetWarnPercent: "80",
+    balanceAlertEnabled: true,
+    balanceWarnThreshold: "1000",
     overallCostLimit: "",
     singleCostLimit: "",
     cooldownMinutes: 10,
     lowCooldownMin: 30,
     highCooldownMin: 30,
     costCooldownMin: 3,
-    expiredPushMode: "once", // "once" | "3times" | "repeat"
     mergeBatchAlerts: true,
     summaryReportEnabled: true,
     summaryIntervalMin: 30,
     autoClickRefresh: false,
     refreshIntervalSec: 60,
+    preferredPageSize: "100",
+    autoOptimizeViewOnStart: true,
     anomalyAlertEnabled: true,
     staleMinutes: 15,
     soundEnabled: true,
@@ -338,7 +341,7 @@
       if (item.direction === "cost_warn" || item.direction === "cost_hit") {
         if (item.costCell && item.costCell.setAttribute) {
           const pctStr = Number.isFinite(item.budgetPct) ? `${item.budgetPct.toFixed(0)}%` : "";
-          const badge = item.direction === "cost_hit" ? `🚨已撞预算${pctStr}` : `⚡快撞预算${pctStr}`;
+          const badge = item.direction === "cost_hit" ? `🚨预算已满${pctStr}` : `⚡预算告急${pctStr}`;
           nextCostCells.set(item.costCell, { direction: item.direction, badge });
         }
       } else if (item.direction === "expired") {
@@ -437,6 +440,16 @@
     trendSamples: [],          // 近 35 分钟每分钟趋势采样（用于计算大盘斜率、单计划走势与撞墙倒计时）
     latestSummaryText: "",
     isGeneratingSummary: false,
+    lastOverallRoi: null,
+    lastOverallRoiLabel: "整体 ROI",
+    lastOverallRoiAt: 0,
+    lastOverallCost: null,
+    lastOverallCostLabel: "整体消耗",
+    lastOverallCostAt: 0,
+    lastAccountBalance: null,
+    lastAccountBalanceLabel: "可用余额",
+    lastAccountBalanceAt: 0,
+    abnormalSearchQuery: "",
   };
 
   // ---------- Shadow DOM UI ----------
@@ -878,6 +891,46 @@
       display: flex; align-items: center; justify-content: space-between; gap: 6px;
       font-size: 10.5px; color: #94a3b8;
     }
+    .update-banner {
+      display: none;
+      align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+      background: linear-gradient(135deg, rgba(37, 99, 235, 0.2), rgba(16, 185, 129, 0.16));
+      border: 1px solid rgba(96, 165, 250, 0.55); border-radius: 10px;
+      padding: 8px 11px; font-size: 11.5px; color: #e2e8f0;
+    }
+    .update-banner.show { display: flex; }
+    .abnormal-search-row {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .abnormal-search-input {
+      flex: 1; background: #0f1420; color: #f8fafc;
+      border: 1px solid #2b3852; border-radius: 6px;
+      padding: 4px 8px; font-size: 11px; outline: none;
+    }
+    .abnormal-search-input:focus { border-color: #4f7cff; }
+    .kpi-sub.warn { color: #fbbf24; font-weight: 700; }
+    .kpi-sub.low { color: #fca5a5; font-weight: 700; }
+    .tip-q {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px; border-radius: 50%; margin-left: 3px;
+      font-size: 9.5px; font-weight: 700; color: #93c5fd;
+      background: rgba(59, 130, 246, 0.16); border: 1px solid rgba(96, 165, 250, 0.4);
+      cursor: help; vertical-align: middle; flex-shrink: 0;
+    }
+    .quick-view-box {
+      background: #121826; border: 1px solid #26334d; border-radius: 8px;
+      padding: 8px 9px; display: flex; flex-direction: column; gap: 6px;
+    }
+    .quick-view-row {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    }
+    .quick-view-row select {
+      width: auto; min-width: 88px; padding: 4px 6px; font-size: 11px;
+    }
+    .quick-view-notes {
+      font-size: 10.5px; color: #94a3b8; line-height: 1.5;
+    }
+    .quick-view-notes strong { color: #cbd5e1; }
   `;
   shadow.appendChild(style);
 
@@ -893,17 +946,25 @@
         <div class="title">
           <span class="dot" id="headerDot"></span>
           <span>Kamisama - 全链路千川</span>
-          <span class="version-tag">v1.3.2</span>
+          <span class="version-tag">v1.3.3</span>
         </div>
         <div class="header-actions">
+          <button class="icon-btn" id="checkUpdateBtn" type="button" title="检查官网 kamisama.si 是否有新版本可更新">更新</button>
           <button class="icon-btn contact-btn" id="contactAuthorBtn" type="button" title="展开并跳转到底部联系作者区">联系作者</button>
-          <button class="icon-btn" id="landscapeModeBtn" title="切换横屏宽版 / 竖屏窄版布局">横屏</button>
+          <button class="icon-btn" id="landscapeModeBtn" title="切换横屏宽版 / 竖屏窄版布局">竖屏</button>
           <button class="icon-btn" id="compactModeBtn" title="切换日常盯盘（简洁版）与参数配置界面">配置</button>
           <button class="icon-btn" id="collapseBtn">收起</button>
         </div>
       </div>
 
       <div class="body">
+        <div class="update-banner" id="updateBanner">
+          <span id="updateBannerText">正在检查最新版本...</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <a class="btn btn-primary btn-sm" id="updateDownloadLink" href="https://www.kamisama.si" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">下载新版</a>
+            <button class="icon-btn" id="closeUpdateBannerBtn" type="button">关闭</button>
+          </div>
+        </div>
         <div class="status-card">
           <div>
             <div class="status-value" id="currentRoiValue">--</div>
@@ -917,7 +978,7 @@
           <button class="view-tab" id="viewConfigBtn" type="button">⚙️ 参数配置</button>
         </div>
 
-        <!-- 日常盯盘核心数据看板（消耗 / ROI / 预算水位 / 计划健康一眼盯盘） -->
+        <!-- 日常盯盘核心数据看板（整体 ROI / 整体消耗 / 可用余额 / 在投巡检） -->
         <div class="kpi-grid dashboard-only" id="dashboardKpiGrid">
           <div class="kpi-card">
             <div class="kpi-label"><span id="dashRoiLabel">整体 ROI</span><span id="dashRoiDelta"></span></div>
@@ -930,19 +991,18 @@
             <div class="kpi-sub" id="dashCostSub">自动识别整体/列表消耗</div>
           </div>
           <div class="kpi-card">
-            <div class="kpi-label"><span>预算水位</span><span id="dashBudgetPct">--</span></div>
-            <div class="kpi-value" id="dashBudgetVal">--</div>
-            <div class="kpi-bar"><div class="kpi-bar-fill" id="dashBudgetBar"></div></div>
-            <div class="kpi-sub" id="dashBudgetSub">自动监测预算撞墙风险</div>
+            <div class="kpi-label"><span id="dashBalanceLabel">可用余额</span><span id="dashBalanceTag">待读取</span></div>
+            <div class="kpi-value" id="dashBalanceVal">--</div>
+            <div class="kpi-sub" id="dashBalanceSub">低于预警线自动提醒充值</div>
           </div>
           <div class="kpi-card">
             <div class="kpi-label"><span>在投巡检</span><span id="dashHealthTag">待启动</span></div>
             <div class="kpi-value" id="dashPlanCount">--</div>
-            <div class="kpi-sub" id="dashPlanBreakdown">跌破0 · 撞墙0 · 过保0 · 高ROI 0</div>
+            <div class="kpi-sub" id="dashPlanBreakdown">跌破0 · 预算0 · 过保0 · 高ROI 0</div>
           </div>
         </div>
 
-        <!-- 异常计划明细（默认严格按表格从上到下顺序排列，支持上一条/下一条与类型筛选） -->
+        <!-- 异常计划明细（默认严格按表格从上到下顺序排列，支持上一条/下一条、类型筛选与关键词检索） -->
         <div class="abnormal-box dashboard-only" id="abnormalBox">
           <div class="section-title">
             <span id="abnormalBoxTitle">异常/重点计划明细</span>
@@ -956,10 +1016,13 @@
               <span class="mini-pill active" data-filter="all" id="filterAllPill">全部</span>
               <span class="mini-pill low" data-filter="low" id="filterLowPill">跌破</span>
               <span class="mini-pill high" data-filter="high" id="filterHighPill">突破</span>
-              <span class="mini-pill cost" data-filter="cost" id="filterCostPill">撞墙</span>
+              <span class="mini-pill cost" data-filter="cost" id="filterCostPill">预算不足</span>
               <span class="mini-pill expired" data-filter="expired" id="filterExpiredPill">过保</span>
             </div>
             <span class="mini-pill" id="sortOrderToggle" title="切换按表格从上到下顺序 / 按极值排序">顺序：表格↑↓</span>
+          </div>
+          <div class="abnormal-search-row">
+            <input type="text" class="abnormal-search-input" id="abnormalSearchInput" placeholder="检索计划名（如 保暖裤 / xs / 预算不足计划）...">
           </div>
           <div class="stepper-bar">
             <div class="stepper-btns">
@@ -989,7 +1052,7 @@
             <div class="summary-meta-row">
               <span id="summaryReportMeta">尚未生成总结，点「刷新」或在启动监控后每 30 分钟自动生成</span>
             </div>
-            <div class="summary-report-body" id="summaryReportContent">点击右上角「刷新」即可生成当前页面的大盘走势预判、好计划放量建议、坏计划止损/撞墙/灰保清单；若在下方「4. AI 投流大脑」填入豆包 / 智谱(免费) / DeepSeek Key，将自动切换为 AI 深度诊断。</div>
+            <div class="summary-report-body" id="summaryReportContent">点击右上角「刷新」即可生成当前页面的大盘走势预判、好计划放量建议、坏计划止损/补预算/灰保清单；若在下方「4. AI 投流大脑」填入豆包 / 智谱(免费) / DeepSeek Key，将自动切换为 AI 深度诊断。</div>
           </div>
         </div>
 
@@ -1021,110 +1084,134 @@
 
             <div id="tableModeBox" style="display:none;flex-direction:column;gap:8px;">
               <div class="grid-3">
-                <label class="field">ROI 列关键词
+                <label class="field" title="用于自动匹配千川表格中的 ROI 列名，多个关键词用逗号隔开，越靠前优先级越高"><span>ROI 列关键词<span class="tip-q">?</span></span>
                   <input type="text" id="roiHeaderKeyword" placeholder="ROI">
                 </label>
-                <label class="field">消耗列关键词
+                <label class="field" title="用于自动匹配千川表格中的消耗列名（如调控消耗、整体消耗）"><span>消耗列关键词<span class="tip-q">?</span></span>
                   <input type="text" id="costHeaderKeyword" placeholder="消耗">
                 </label>
-                <label class="field">名称列关键词
+                <label class="field" title="用于自动匹配计划名/任务名/抖音号/商品名列，方便告警直指具体计划"><span>名称列关键词<span class="tip-q">?</span></span>
                   <input type="text" id="nameHeaderKeyword" placeholder="计划">
                 </label>
               </div>
               <div class="grid-2">
-                <label class="field">最低消耗门槛(元)
-                  <input type="number" step="10" id="minCost" placeholder="100">
+                <label class="field" title="仅对消耗达到该金额的计划判断 ROI 跌破/突破，避免刚花几块钱的新计划误报（默认 20 元）"><span>最低消耗门槛(元)<span class="tip-q">?</span></span>
+                  <input type="number" step="10" id="minCost" placeholder="20">
                 </label>
-                <label class="field">自动点刷新间隔(秒)
+                <label class="field" title="配合下方「定时点页内刷新」使用：开启后每隔多少秒自动点击一次千川页面自带的刷新按钮（建议 60~120 秒）"><span>自动点刷新间隔(秒)<span class="tip-q">?</span></span>
                   <input type="number" min="15" step="5" id="refreshIntervalSec" placeholder="60">
                 </label>
               </div>
               <div class="row-between" style="flex-wrap:wrap;gap:6px;">
-                <label class="check-row">
+                <label class="check-row" title="只盯正在“投放中”的计划，自动忽略暂停、已结束、审核中计划">
                   <input type="checkbox" id="onlyDelivering">
-                  <span>仅“投放中”</span>
+                  <span>仅“投放中”<span class="tip-q">?</span></span>
                 </label>
-                <label class="check-row">
+                <label class="check-row" title="在直播调控任务页中，只盯正在“调控中”的任务">
                   <input type="checkbox" id="onlyRegulating">
-                  <span>仅“调控中”</span>
+                  <span>仅“调控中”<span class="tip-q">?</span></span>
                 </label>
-                <label class="check-row">
+                <label class="check-row" title="默认关闭，避免手动调出价时被自动刷新打断；离开工位挂机盯盘且页面不会自动跳数时再勾上，按间隔自动点击千川页内刷新按钮">
                   <input type="checkbox" id="autoClickRefresh">
-                  <span>定时点页内刷新</span>
+                  <span>定时点页内刷新<span class="tip-q">?</span></span>
                 </label>
+              </div>
+              <div class="quick-view-box">
+                <div class="quick-view-row">
+                  <button class="btn btn-primary btn-sm" id="sortCostDescBtn" type="button" title="自动点击千川表头「整体消耗 / 调控消耗」按从高到低排序，优先把花钱最多的计划排在前面盯盘">⬇ 消耗由高到低</button>
+                  <button class="btn btn-ghost btn-sm" id="applyPageSizeBtn" type="button" title="自动把千川列表（投放页与调控页通用）切换为右侧选定的每页显示条数，一次展开更多计划免翻页">📄 切每页100条</button>
+                  <select id="preferredPageSize" title="可自由切换千川每页展示条数（10 / 20 / 50 / 100 条），默认 100 条方便整页检索">
+                    <option value="10">10 条/页</option>
+                    <option value="20">20 条/页</option>
+                    <option value="50">50 条/页</option>
+                    <option value="100">100 条/页</option>
+                  </select>
+                </div>
+                <label class="check-row" title="点击「开始监控」时自动执行一次消耗降序 + 切每页条数，投放与调控页通用">
+                  <input type="checkbox" id="autoOptimizeViewOnStart">
+                  <span>开始监控时自动：消耗降序 + 切为设定条数</span>
+                </label>
+                <div class="quick-view-notes">
+                  <strong>⬇ 消耗由高到低</strong>：自动按消耗降序排列表格，先把最烧钱的计划排在前面盯盘。<br>
+                  <strong>📄 切每页条数（默认100条）</strong>：自动把当前页条数改成 10/20/50/100 条（投放与调控页通用），减少翻页漏看。<br>
+                  <span style="color:#fbbf24;">⚠️ 备注：勾选上方自动执行后，每次加载页面都会重新拉取数据，页面会刷新较久，请耐心等待（嫌慢可取消勾选或改选 20/50 条）。</span>
+                </div>
               </div>
               <div class="muted" id="tableScanSummary">等待扫描页面表格...</div>
             </div>
           </div>
         </div>
 
-        <!-- 2. ROI 阈值 · 预算撞墙 · 过保与汇报（可独立折叠） -->
+        <!-- 2. ROI 阈值 · 预算 · 余额与汇报（可独立折叠） -->
         <div class="section config-section" data-sec="sec_rules" id="sec_rules">
           <div class="section-title collapsible-head" data-sec-toggle="sec_rules">
             <span class="sec-head-left">
               <span class="sec-chevron">▾</span>
-              <span class="sec-label">2. ROI 阈值 · 预算撞墙 · 过保与汇报</span>
+              <span class="sec-label">2. ROI 阈值 · 预算 · 余额与汇报</span>
             </span>
           </div>
           <div class="sec-body">
             <div class="grid-2">
-              <label class="field">ROI下限(跌破)
+              <label class="field" title="整体或单条计划 ROI 低于此值时标红，并触发跌破提醒（留空表示不设下限）"><span>ROI下限(跌破)<span class="tip-q">?</span></span>
                 <input type="number" step="0.01" id="lowerLimit" placeholder="如 1.5">
               </label>
-              <label class="field">ROI上限(突破)
+              <label class="field" title="整体或单条计划 ROI 高于此值时标橙，提醒关注爆量优质计划可加预算（留空表示不设上限）"><span>ROI上限(突破)<span class="tip-q">?</span></span>
                 <input type="number" step="0.01" id="upperLimit" placeholder="如 4.0">
               </label>
             </div>
             <div class="grid-3">
-              <label class="field" title="跌破下限后同计划多久内不重复推（刷新不重置）">跌破冷却(分)
+              <label class="field" title="跌破下限后，同一计划在多少分钟内不重复推送提醒（刷新页面不会重置）"><span>跌破冷却(分)<span class="tip-q">?</span></span>
                 <input type="number" min="1" step="5" id="lowCooldownMin" placeholder="30">
               </label>
-              <label class="field" title="突破上限后同计划多久内不重复推（刷新不重置）">突破冷却(分)
+              <label class="field" title="突破上限后，同一计划在多少分钟内不重复推送提醒（刷新页面不会重置）"><span>突破冷却(分)<span class="tip-q">?</span></span>
                 <input type="number" min="1" step="5" id="highCooldownMin" placeholder="30">
               </label>
-              <label class="field" title="预算快撞墙/已撞墙紧急提醒间隔，最低1分钟防限流">撞墙急推(分)
+              <label class="field" title="计划预算告急或打满时最紧急，每隔几分钟催一次加预算（默认 3 分钟，加完预算自动停）"><span>预算急推(分)<span class="tip-q">?</span></span>
                 <input type="number" min="1" step="1" id="costCooldownMin" placeholder="3">
               </label>
             </div>
-            <div class="grid-2">
-              <label class="field">过保推送次数(当天)
-                <select id="expiredPushMode">
-                  <option value="once">仅推送 1 次（推荐）</option>
-                  <option value="3times">最多推送 3 次（间隔30分）</option>
-                  <option value="repeat">每 30 分钟持续提醒</option>
-                </select>
-              </label>
-              <label class="check-row" style="align-self:end;padding-bottom:6px;" title="同一轮扫描有多条计划同时触发时合并为1条摘要消息推送">
+            <div class="row-between" style="flex-wrap:wrap;gap:6px;margin-top:2px;">
+              <label class="check-row" title="同一轮扫描如果有多条计划同时跌破/突破/预算不足，合并成 1 条摘要消息推到手机，彻底防刷屏轰炸">
                 <input type="checkbox" id="mergeBatchAlerts">
-                <span>多计划同轮合并推送</span>
+                <span>多计划同轮合并推送（防刷屏）<span class="tip-q">?</span></span>
+              </label>
+              <label class="check-row" title="仅标黄状态列里灰色的「保」（已过赔付保障期），绿保与无保不标；若开启推送，每条计划当天只推 1 次">
+                <input type="checkbox" id="markExpiredGuarantee">
+                <span>黄色标记过保计划（仅灰保，当天仅推1次）<span class="tip-q">?</span></span>
               </label>
             </div>
             <div class="row-between" style="flex-wrap:wrap;gap:6px;margin-top:2px;">
-              <label class="check-row">
+              <label class="check-row" title="自动读取表格预算列或单计划上限，消耗快烧满时表格标紫并推手机提醒及时加预算">
                 <input type="checkbox" id="costAlertEnabled">
-                <span>预算撞墙提醒（快赶上预算提醒加预算）</span>
+                <span>计划预算提醒（快达预算提醒加预算）<span class="tip-q">?</span></span>
               </label>
-              <label class="check-row">
-                <input type="checkbox" id="markExpiredGuarantee">
-                <span>黄色标记过保计划（仅灰保）</span>
+              <label class="check-row" title="自动读取千川页面顶部「千川可用余额 / 可用余额」，低于下方预警线时提醒充值防断流">
+                <input type="checkbox" id="balanceAlertEnabled">
+                <span>千川可用余额提醒（快没余额提醒充值）<span class="tip-q">?</span></span>
               </label>
             </div>
             <div class="grid-3">
-              <label class="field">撞墙预警比例(%)
+              <label class="field" title="单计划消耗达到预算的百分之多少时开始预警（默认 80% 提醒，100% 标已满）"><span>预算预警比例(%)<span class="tip-q">?</span></span>
                 <input type="number" min="10" max="100" step="5" id="budgetWarnPercent" placeholder="80">
               </label>
-              <label class="field">整体消耗上限(元)
-                <input type="number" min="0" step="100" id="overallCostLimit" placeholder="留空不限">
+              <label class="field" title="顶部千川可用余额低于此金额时，看板红字提示并推手机提醒记得充值（默认 1000 元）"><span>余额预警线(元)<span class="tip-q">?</span></span>
+                <input type="number" min="0" step="100" id="balanceWarnThreshold" placeholder="1000">
               </label>
-              <label class="field">单计划上限(元)
+              <label class="field" title="留空则自动读每条计划自己的日预算/调控预算；填写后会按统一单计划金额预警"><span>单计划上限(元)<span class="tip-q">?</span></span>
                 <input type="number" min="0" step="50" id="singleCostLimit" placeholder="留空读预算">
               </label>
             </div>
-            <div class="muted" id="overallCostStatus">预算撞墙：自动监测表格预算（设整体上限可同步盯全店消耗）</div>
+            <div class="grid-2">
+              <label class="field" title="可选：设置全店/当前视图的今日整体消耗预警上限，留空则不限制"><span>整体消耗上限(元)<span class="tip-q">?</span></span>
+                <input type="number" min="0" step="100" id="overallCostLimit" placeholder="留空不限">
+              </label>
+              <div class="muted" id="balanceStatusHint" style="align-self:end;padding-bottom:6px;">可用余额：等待读取顶部千川余额</div>
+            </div>
+            <div class="muted" id="overallCostStatus">预算提醒：自动监测表格预算（设整体上限可同步盯全店消耗）</div>
             <div class="row-between" style="flex-wrap:wrap;gap:6px;margin-top:2px;">
-              <label class="check-row">
+              <label class="check-row" title="定时自动汇总大盘走势、优质好计划与异常坏计划并推送手机（不接AI用内置逻辑，接AI出深度建议）">
                 <input type="checkbox" id="summaryReportEnabled">
-                <span>定时投流总结报告</span>
+                <span>定时投流总结报告<span class="tip-q">?</span></span>
               </label>
               <div style="display:flex;align-items:center;gap:5px;">
                 <input type="number" min="5" step="5" id="summaryIntervalMin" placeholder="30" style="width:58px;padding:4px 6px;" title="定时发送投流总结报告的间隔分钟数">
@@ -1134,11 +1221,11 @@
             </div>
             <div class="muted" id="summaryNextHint">投流总结：启动监控后每 30 分钟自动推送一次</div>
             <div class="grid-2">
-              <label class="check-row">
+              <label class="check-row" title="监测千川掉登录、页面报错或长时间数据不更新卡死，及时推手机避免挂机失效">
                 <input type="checkbox" id="anomalyAlertEnabled">
-                <span>登录失效/报错/断流提醒</span>
+                <span>登录失效/报错/断流提醒<span class="tip-q">?</span></span>
               </label>
-              <label class="field">数据无更新断流(分钟,0关)
+              <label class="field" title="超过多少分钟页面消耗与 ROI 纹丝不动时判定为卡死断流并提醒（填 0 关闭）"><span>数据无更新断流(分,0关)<span class="tip-q">?</span></span>
                 <input type="number" min="0" step="1" id="staleMinutes" placeholder="15">
               </label>
             </div>
@@ -1188,7 +1275,7 @@
               </label>
               <label class="check-row">
                 <input type="checkbox" id="pushOnCost">
-                <span>撞墙提醒</span>
+                <span>预算提醒</span>
               </label>
               <label class="check-row">
                 <input type="checkbox" id="pushOnExpired">
@@ -1432,10 +1519,20 @@
 
   function formatCostDisplay(costVal) {
     if (costVal === null || costVal === undefined) return "--";
+    if (costVal >= 1e8) {
+      return `¥${(costVal / 1e8).toFixed(2)}亿`;
+    }
     if (costVal >= 10000) {
       return `¥${(costVal / 10000).toFixed(2)}万 (${costVal.toFixed(0)}元)`;
     }
-    return `¥${costVal}`;
+    return `¥${Math.round(costVal * 100) / 100}`;
+  }
+
+  function formatCompactCost(costVal) {
+    if (costVal === null || costVal === undefined || !Number.isFinite(costVal)) return "--";
+    if (costVal >= 1e8) return `¥${(costVal / 1e8).toFixed(2)}亿`;
+    if (costVal >= 10000) return `¥${(costVal / 10000).toFixed(2)}万`;
+    return `¥${Math.round(costVal).toLocaleString("zh-CN")}`;
   }
 
   function formatTime(date = new Date()) {
@@ -1754,22 +1851,42 @@
     return lines[0] || "";
   }
 
-  function isCssGreenColor(colorStr) {
-    if (!colorStr || colorStr === "transparent" || colorStr === "none") return false;
-    const m = String(colorStr).match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/i);
-    if (!m) return false;
-    const r = Number(m[1]);
-    const g = Number(m[2]);
-    const b = Number(m[3]);
-    const a = m[4] !== undefined ? Number(m[4]) : 1;
-    if (a <= 0.05) return false;
-    return g > r + 15 && g > b + 10 && g >= 95;
+  function parseCssColorRgb(colorStr) {
+    if (!colorStr || colorStr === "transparent" || colorStr === "none") return null;
+    const s = String(colorStr).trim();
+    const rgbMatch = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/i);
+    if (rgbMatch) {
+      const a = rgbMatch[4] !== undefined ? Number(rgbMatch[4]) : 1;
+      if (a <= 0.05) return null;
+      return { r: Number(rgbMatch[1]), g: Number(rgbMatch[2]), b: Number(rgbMatch[3]) };
+    }
+    const hexMatch = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (hexMatch) {
+      let h = hexMatch[1];
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      return {
+        r: parseInt(h.slice(0, 2), 16),
+        g: parseInt(h.slice(2, 4), 16),
+        b: parseInt(h.slice(4, 6), 16),
+      };
+    }
+    return null;
+  }
+
+  // 绿保（传统赔付保障中）或 蓝保（千川乘方/新版盾牌✓赔付保障中）均属于未过保的有效保障色
+  function isCssProtectedColor(colorStr) {
+    const c = parseCssColorRgb(colorStr);
+    if (!c) return false;
+    const { r, g, b } = c;
+    const isGreen = g > r + 15 && g > b + 10 && g >= 95;
+    const isBlue = b > r + 25 && b > g + 10 && b >= 120;
+    return isGreen || isBlue;
   }
 
   // 识别状态单元格里的「保」赔付保障状态：
-  // "protected" = 绿色「保」（保障中）
-  // "expired"   = 灰色「保」或文字提示已过保/保障已结束（明确过保）
-  // "none"      = 无「保」徽标（老计划/未获保障/已过保）
+  // "protected" = 蓝保 / 绿保（赔付保障中，未过保）
+  // "expired"   = 灰保（纯灰色，已过保）或文字明确提示已过保/保障已结束
+  // "none"      = 无「保」徽标
   function extractGuaranteeState(statusCell) {
     if (!statusCell) return "unknown";
     const fullText = normalizeText(statusCell.innerText || statusCell.textContent);
@@ -1791,22 +1908,36 @@
       return "none";
     }
 
-    // 任意一个「保」节点或其包裹容器/SVG 路径呈绿色，即判定为「保障中（绿保）」
+    // 任意一个「保」节点或其包裹容器/SVG 路径呈蓝色或绿色，即判定为「保障中（蓝保/绿保）」
     for (const node of baoNodes) {
-      const checkChain = [node, node.parentElement, ...Array.from(node.querySelectorAll("svg, path, rect, circle")).slice(0, 6)].filter(Boolean);
+      const parentEl = node.parentElement;
+      const checkChain = [
+        node,
+        parentEl,
+        ...Array.from(node.querySelectorAll("svg, path, rect, circle, polygon")).slice(0, 8),
+        ...(parentEl ? Array.from(parentEl.querySelectorAll("svg, path, rect, circle, polygon")).slice(0, 8) : []),
+      ].filter(Boolean);
       for (const el of checkChain) {
         const cls = typeof el.className === "string" ? el.className : "";
-        if (/(success|green|active-guarantee|in-guarantee|protecting)/i.test(cls) && !/(gray|grey|disabled|expired|inactive)/i.test(cls)) {
+        if (
+          /(success|green|primary|blue|info|active-guarantee|in-guarantee|protecting)/i.test(cls) &&
+          !/(gray|grey|disabled|expired|inactive)/i.test(cls)
+        ) {
+          return "protected";
+        }
+        const attrFill = el.getAttribute?.("fill");
+        const attrStroke = el.getAttribute?.("stroke");
+        if (isCssProtectedColor(attrFill) || isCssProtectedColor(attrStroke)) {
           return "protected";
         }
         try {
           const st = window.getComputedStyle(el);
           if (
-            isCssGreenColor(st.color) ||
-            isCssGreenColor(st.backgroundColor) ||
-            isCssGreenColor(st.borderColor) ||
-            isCssGreenColor(st.fill) ||
-            isCssGreenColor(st.stroke)
+            isCssProtectedColor(st.color) ||
+            isCssProtectedColor(st.backgroundColor) ||
+            isCssProtectedColor(st.borderColor) ||
+            isCssProtectedColor(st.fill) ||
+            isCssProtectedColor(st.stroke)
           ) {
             return "protected";
           }
@@ -1816,7 +1947,7 @@
       }
     }
 
-    // 存在「保」图标但非绿色（即灰色「保」），判定为明确过保
+    // 存在「保」图标但既非蓝保也非绿保（即纯灰色「保」），判定为明确过保
     return "expired";
   }
 
@@ -1841,6 +1972,59 @@
           else if (u === "千" || u === "k" || u === "K") val *= 1e3;
           return Math.round(val * 100) / 100;
         }
+      }
+    }
+    return null;
+  }
+
+  // 自动查找页面顶部「千川可用余额 / 账户余额」（用于看板直显 + 余额不足提醒充值）
+  function autoFindAccountBalanceElement() {
+    const BALANCE_LABEL_RE = /(千川可用余额|账户可用余额|可用余额|账户余额|千川余额|余额\s*[\(（]元[\)）])/;
+    const BALANCE_EXCLUDE_RE = /(冻结|不可用|消返|红包|赠款|授信|昨日|总充值|待入账|退回)/;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    const labelHits = [];
+    while ((node = walker.nextNode())) {
+      const txt = normalizeText(node.textContent);
+      if (!txt || txt.length > 44 || !BALANCE_LABEL_RE.test(txt) || BALANCE_EXCLUDE_RE.test(txt)) continue;
+      const parent = node.parentElement;
+      if (!parent || !isVisible(parent)) continue;
+      if (parent.closest("table, thead, tbody, [role='table'], [role='grid']")) continue;
+      const rect = parent.getBoundingClientRect();
+      // 兼容页面轻度滚动或固定顶栏：允许 top 在 -200 ~ 480px 范围内
+      if (rect.top < -200 || rect.top > 480 || rect.height > 120) continue;
+
+      // 情况 1：标签与金额在同一个文本里（如 "可用余额(元) 598,490.56" 或 "可用余额：500元"）
+      const inlineMatch = txt.match(/(?:千川可用余额|账户可用余额|可用余额|账户余额|千川余额|余额)(?:\s*[\(（]元[\)）])?\s*[:：¥￥]?\s*(\d+(?:,\d+)*(?:\.\d+)?)\s*(亿|万|w|W|千|k|K)?/);
+      if (inlineMatch) {
+        let val = Number(inlineMatch[1].replace(/,/g, ""));
+        if (Number.isFinite(val)) {
+          const u = inlineMatch[2] || "";
+          if (u === "亿") val *= 1e8;
+          else if (u === "万" || u === "w" || u === "W") val *= 1e4;
+          else if (u === "千" || u === "k" || u === "K") val *= 1e3;
+          return { el: parent, label: "可用余额", value: Math.round(val * 100) / 100 };
+        }
+      }
+
+      const priority = /千川可用余额|账户可用余额/.test(txt) ? 100 : /可用余额/.test(txt) ? 85 : /余额\s*[\(（]元[\)）]/.test(txt) ? 75 : 50;
+      labelHits.push({ el: parent, label: "可用余额", priority });
+    }
+
+    labelHits.sort((a, b) => b.priority - a.priority);
+    for (const hit of labelHits) {
+      let container = hit.el.parentElement;
+      for (let depth = 0; depth < 6 && container && container !== document.body; depth++) {
+        const rect = container.getBoundingClientRect();
+        if (rect.width > 560 || rect.height > 160) break;
+        const valEl = findBestMetricElementInCard(container, hit.el);
+        if (valEl) {
+          const val = parseMetricNumber(readElementMetricText(valEl));
+          if (val !== null && val >= 0) {
+            return { el: valEl, label: hit.label || "可用余额", value: val };
+          }
+        }
+        container = container.parentElement;
       }
     }
     return null;
@@ -1906,6 +2090,12 @@
     rawEls.sort((a, b) => {
       const ta = readElementMetricText(a);
       const tb = readElementMetricText(b);
+      const na = parseMetricNumber(ta);
+      const nb = parseMetricNumber(tb);
+      const nonZeroA = na !== null && na > 0 ? 1 : 0;
+      const nonZeroB = nb !== null && nb > 0 ? 1 : 0;
+      if (nonZeroB !== nonZeroA) return nonZeroB - nonZeroA;
+
       const hasDecA = ta.includes(".") ? 1 : 0;
       const hasDecB = tb.includes(".") ? 1 : 0;
       if (hasDecB !== hasDecA) return hasDecB - hasDecA;
@@ -1949,16 +2139,17 @@
 
     const metricCards = Array.from(
       document.querySelectorAll(
-        ".aurora-qc-statistic, .oc-promotion-metric-card, .oc-statistic, [class*='metricCardStatistic'], [class*='metric-card'], [class*='kpi-card'], [class*='stat-card']"
+        ".aurora-qc-statistic, .oc-promotion-metric-card, .oc-statistic, [class*='metricCardStatistic'], [class*='metric-card'], [class*='kpi-card'], [class*='stat-card'], .card"
       )
     ).filter((c) => isVisible(c));
     const preferredCardMatches = [];
     for (const card of metricCards) {
       const rect = card.getBoundingClientRect();
       if (rect.width > 640 || rect.height > 280) continue;
-      const titleEl = card.querySelector(
-        "[data-testid='metric-card-title-region'], .aurora-qc-statistic-title, .oc-statistic-title, [class*='title'], [class*='label'], [class*='name']"
-      );
+      const titleEl =
+        card.querySelector("[data-testid='metric-card-title-region']") ||
+        card.querySelector(".aurora-qc-statistic-title, .oc-statistic-title, .card-label") ||
+        card.querySelector("[class*='title'], [class*='label'], [class*='name']");
       const titleTxt = normalizeText(titleEl?.getAttribute?.("title") || titleEl?.innerText || titleEl?.textContent);
       if (!titleTxt || titleTxt.length > 26 || !/ROI/i.test(titleTxt) || ROI_EXCLUDE_RE.test(titleTxt) || /建议/.test(titleTxt)) {
         continue;
@@ -1977,18 +2168,23 @@
         findBestMetricElementInCard(card, titleEl);
       if (!numBox || !isVisible(numBox)) continue;
       const valText = readElementMetricText(numBox);
-      if (parseMetricNumber(valText) === null) continue;
-      const score = /综合营销ROI|整体支付ROI/i.test(titleTxt)
+      const numVal = parseMetricNumber(valText);
+      if (numVal === null) continue;
+      const cleanLabel = titleTxt.replace(/\s*(重要|核心|推荐|新)$/g, "").trim() || titleTxt;
+      let score = /综合营销ROI|整体支付ROI/i.test(cleanLabel)
         ? 100
-        : /直接支付ROI|直播间支付ROI|直播间成交ROI/i.test(titleTxt)
+        : /直接支付ROI|直播间支付ROI|直播间成交ROI/i.test(cleanLabel)
           ? 85
-          : /支付ROI|成交ROI|全场ROI/i.test(titleTxt)
+          : /支付ROI|成交ROI|全场ROI/i.test(cleanLabel)
             ? 70
             : 50;
+      if (numVal > 0) score += 60;
+      if (valText.includes(".")) score += 15;
+      if (card.matches?.(".aurora-qc-statistic, .oc-promotion-metric-card, .oc-statistic")) score += 25;
       preferredCardMatches.push({
         el: numBox,
         selector: buildUniqueSelector(numBox),
-        label: titleTxt,
+        label: cleanLabel,
         value: valText,
         score,
       });
@@ -3134,8 +3330,8 @@
     const groupTitleMap = {
       low: "⚠️ ROI 跌破下限提醒",
       high: "🔥 ROI 突破上限提醒",
-      cost_hit: "🚨 预算已撞墙（请加预算）",
-      cost_warn: "⚡ 预算快撞墙（请加预算）",
+      cost_hit: "🚨 计划预算已满（请加预算）",
+      cost_warn: "⚡ 计划预算不足（请加预算）",
       expired: "⚠️ 计划已过保提醒（防跑偏/跑飞）",
     };
 
@@ -3285,13 +3481,13 @@
     persistCooldownMap();
 
     const remain = Math.max(0, capVal - costVal);
-    const title = isHit ? "🚨 预算已撞墙（请加预算）" : "⚡ 预算快撞墙（请加预算）";
+    const title = isHit ? "🚨 计划预算已满（请加预算）" : "⚡ 计划预算不足（请加预算）";
     const summary = isHit
-      ? `${label} 消耗已达 ${formatCostDisplay(costVal)} / 预算 ${formatCostDisplay(capVal)}（${pct.toFixed(1)}%，已撞墙，请及时加预算）`
-      : `${label} 消耗 ${formatCostDisplay(costVal)} / 预算 ${formatCostDisplay(capVal)}（已烧 ${pct.toFixed(1)}%，仅剩 ${formatCostDisplay(remain)}，快撞墙请加预算）`;
+      ? `${label} 消耗已达 ${formatCostDisplay(costVal)} / 预算 ${formatCostDisplay(capVal)}（${pct.toFixed(1)}%，预算已用满，请及时加预算）`
+      : `${label} 消耗 ${formatCostDisplay(costVal)} / 预算 ${formatCostDisplay(capVal)}（已烧 ${pct.toFixed(1)}%，仅剩 ${formatCostDisplay(remain)}，请及时加预算）`;
     const detailLines = [
       `触发时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
-      `撞墙预警比例：${warnPct}%（紧急提醒每 ${cdMin} 分钟一次，加预算后自动停止）`,
+      `预算预警比例：${warnPct}%（紧急提醒每 ${cdMin} 分钟一次，加预算后自动停止）`,
       ...extraLines,
       `页面标题：${document.title || "监控页面"}`,
     ];
@@ -3320,28 +3516,52 @@
     return { state, pct };
   }
 
-  // ---------- 过保计划可选提醒（支持仅推1次 / 最多3次 / 持续每30分钟，跨刷新记忆） ----------
+  // ---------- 千川账户可用余额不足提醒（每 30 分钟内最多推一次，提醒及时充值防断流） ----------
+  function checkAndAlertBalance(balanceVal, thresholdVal, label = "千川可用余额") {
+    if (!config.balanceAlertEnabled) return "ok";
+    if (balanceVal === null || !Number.isFinite(balanceVal) || !Number.isFinite(thresholdVal) || thresholdVal <= 0) {
+      return "ok";
+    }
+    if (balanceVal > thresholdVal) return "ok";
+
+    const cdKey = "account_balance:low";
+    const cooldownMs = 30 * 60 * 1000;
+    const last = cooldownMap.get(cdKey);
+    const now = Date.now();
+    if (last && now - last.ts < cooldownMs) {
+      return "warn";
+    }
+    cooldownMap.set(cdKey, { ts: now, count: (last?.count || 0) + 1, direction: "warn", day: getLocalDayKey() });
+    persistCooldownMap();
+
+    const title = "💰 千川可用余额不足，记得充值！";
+    const summary = `${label} 仅剩 ${formatCostDisplay(balanceVal)}（低于预警线 ${formatCostDisplay(thresholdVal)}），请及时充值防止在投计划断流`;
+    const detailLines = [
+      `检测时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+      `提醒冷却：30 分钟内不重复推送`,
+      `页面标题：${document.title || "监控页面"}`,
+    ];
+    playBeep("low");
+    pushLog("low", summary);
+    dispatchToBackground({ title, summary, detailLines, level: "error" });
+    return "low";
+  }
+
+  // ---------- 过保计划可选提醒（有计划过保当天只推送 1 次，跨刷新记忆不重复轰炸） ----------
   function checkAndAlertExpired(targetKey, label, guaranteeState, extraLines = [], batchQueue = null) {
     if (!config.pushOnExpired) return;
     const cdKey = `expired:${targetKey}`;
-    const mode = config.expiredPushMode || "once";
     const last = cooldownMap.get(cdKey);
     const now = Date.now();
     const prevCount = Number(last?.count || 0);
-    const repeatMs = 30 * 60 * 1000;
+    if (prevCount >= 1) return;
 
-    if (mode === "once" && prevCount >= 1) return;
-    if (mode === "3times" && (prevCount >= 3 || (last && now - last.ts < repeatMs))) return;
-    if (mode === "repeat" && last && now - last.ts < repeatMs) return;
-
-    const nextCount = prevCount + 1;
-    cooldownMap.set(cdKey, { ts: now, count: nextCount, direction: "expired", day: getLocalDayKey() });
+    cooldownMap.set(cdKey, { ts: now, count: 1, direction: "expired", day: getLocalDayKey() });
     persistCooldownMap();
 
     const tagText = guaranteeState === "expired" ? "已过赔付保障期（灰保）" : "无赔付保障（过保）";
-    const countSuffix = mode === "3times" ? `（第 ${nextCount}/3 次）` : mode === "once" ? "（当天仅推1次）" : "";
     const title = "⚠️ 计划已过保提醒（防跑偏/跑飞）";
-    const summary = `${label} 当前${tagText}${countSuffix}，建议重点盯盘防止跑偏跑飞`;
+    const summary = `${label} 当前${tagText}，建议重点盯盘防止跑偏跑飞`;
     const detailLines = [
       `检测时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
       ...extraLines,
@@ -3354,7 +3574,7 @@
       shortLabel: label.replace(/^计划「|」$/g, ""),
       title,
       summary,
-      compactLine: `${label} ${tagText}${countSuffix}${extraLines[0] ? ` · ${extraLines[0]}` : ""}`,
+      compactLine: `${label} ${tagText}${extraLines[0] ? ` · ${extraLines[0]}` : ""}`,
       detailLines,
       beepLevel: "warn",
       logLevel: "warn",
@@ -3371,18 +3591,18 @@
   }
 
   // ---------- 趋势采样器（每分钟记录一次快照，支撑近30分钟趋势预判、单计划涨跌与预计撞墙倒计时） ----------
-  function recordTrendSample(displayRoi, effectiveCost, rows) {
+  function recordTrendSample(displayRoi, effectiveCost, rows, roiSource = "overall") {
     const now = Date.now();
     const list = healthState.trendSamples;
     const last = list[list.length - 1];
-    if (last && now - last.ts < 55000) return;
+    if (last && now - last.ts < 55000 && last.roiSource === roiSource) return;
     const planMap = {};
     for (const r of (rows || []).slice(0, 120)) {
       if (r.id) {
         planMap[r.id] = { roi: r.roi, cost: r.cost };
       }
     }
-    list.push({ ts: now, displayRoi, effectiveCost, planMap });
+    list.push({ ts: now, displayRoi, roiSource, effectiveCost, planMap });
     const cutoff = now - 40 * 60 * 1000;
     while (list.length > 0 && list[0].ts < cutoff) {
       list.shift();
@@ -3527,7 +3747,7 @@
           forecastWord = "大盘出现下滑惯性，如不及时压低或关停低ROI计划，接下来半小时大概率继续被拉低";
         } else {
           trendWord = `➡️ 窄幅平稳（近${elapsedMin}分 ${roiDiff >= 0 ? "+" : ""}${roiDiff.toFixed(2)}）`;
-          forecastWord = "整体走势平稳，保持当前出价节奏，重点防预算撞墙断流即可";
+          forecastWord = "整体走势平稳，保持当前出价节奏，重点防预算打满断流即可";
         }
       }
 
@@ -3551,7 +3771,7 @@
         const remain = item.budget - item.cost;
         if (burn > 1 && remain > 0) {
           const etaMin = Math.max(1, Math.round((remain / burn) * elapsedMin));
-          return etaMin <= 180 ? ` · 按增速约${etaMin}分后撞墙` : "";
+          return etaMin <= 180 ? ` · 按增速约${etaMin}分后打满预算` : "";
         }
         return "";
       };
@@ -3600,7 +3820,7 @@
         ruleLines.push(`   暂无显著高ROI放量计划，建议继续观察或补充新素材测款`);
       }
 
-      ruleLines.push(`\n3. 【异常坏计划（止损 / 撞墙加预算 / 灰保防跑偏）】`);
+      ruleLines.push(`\n3. 【异常坏计划（止损 / 补预算 / 灰保防跑偏）】`);
       let hasBad = false;
       if (lowItems.length > 0) {
         hasBad = true;
@@ -3616,7 +3836,7 @@
         costItems.slice(0, 3).forEach((p) => {
           const eta = getBudgetEtaTag(p);
           ruleLines.push(
-            `   ⚡ 预算撞墙「${p.name.slice(0, 16)}」已烧${Math.round(p.budgetPct || 0)}%（¥${Math.round(p.cost || 0)}/¥${Math.round(p.budget || 0)}${eta}）→ 建议及时加预算`
+            `   ⚡ 预算不足「${p.name.slice(0, 16)}」已烧${Math.round(p.budgetPct || 0)}%（¥${Math.round(p.cost || 0)}/¥${Math.round(p.budget || 0)}${eta}）→ 建议及时加预算`
           );
         });
       }
@@ -3626,12 +3846,12 @@
         ruleLines.push(`   🟡 灰保已过保（${expiredItems.length}条）：${expNames} → 易跑偏跑飞，建议重点盯盘`);
       }
       if (!hasBad) {
-        ruleLines.push(`   当前无跌破、撞墙或灰保过保风险，计划运行健康`);
+        ruleLines.push(`   当前无跌破、预算不足或灰保过保风险，计划运行健康`);
       }
 
       const actions = [];
       if (lowItems.length > 0) actions.push(`优先处理 ${lowItems.length} 条跌破下限${isLiveControlScene ? "调控任务" : "计划"}止损`);
-      if (costItems.length > 0) actions.push(`给 ${costItems.length} 条快撞墙${isLiveControlScene ? "调控任务" : "计划"}补预算防断流`);
+      if (costItems.length > 0) actions.push(`给 ${costItems.length} 条预算不足${isLiveControlScene ? "调控任务" : "计划"}补预算防断流`);
       if (expiredItems.length > 0) actions.push(`复核 ${expiredItems.length} 条灰保已过保计划防止跑偏`);
       if (goodPlanPool.length > 0) actions.push(`对 Top ${goodPlanPool.length} 优质计划适当加预算放量`);
       ruleLines.push(`\n4. 【下个${intervalMin}分钟重点动作】`, `   ${actions.length > 0 ? actions.join("；") : "保持当前出价与预算节奏，继续盯盘"}`);
@@ -3728,7 +3948,7 @@
       renderSummaryCardInPanel({
         engineType: usedEngineType,
         engineLabel: usedEngineLabel,
-        metaText: `${timeStr} · ${sceneName} · 活跃${rows.length}条（跌破${lowItems.length}/撞墙${costItems.length}/灰保${expiredItems.length}/高ROI${highItems.length}）`,
+        metaText: `${timeStr} · ${sceneName} · 活跃${rows.length}条（跌破${lowItems.length}/预算${costItems.length}/灰保${expiredItems.length}/高ROI${highItems.length}）`,
         bodyText: finalReportText,
       });
 
@@ -3738,7 +3958,7 @@
         healthState.lastSummarySnapshot = { ts: now, displayRoi, effectiveCost, activeCount: rows.length };
         updateSummaryNextHint();
 
-        const compactSummary = `${displayRoiLabel} ${displayRoi ?? "--"} | ${isLiveControlScene ? "调控耗" : "耗"} ${formatCostDisplay(effectiveCost)} | 跌破${lowItems.length}·撞墙${costItems.length}·灰保${expiredItems.length}·高ROI${highItems.length}`;
+        const compactSummary = `${displayRoiLabel} ${displayRoi ?? "--"} | ${isLiveControlScene ? "调控耗" : "耗"} ${formatCostDisplay(effectiveCost)} | 跌破${lowItems.length}·预算${costItems.length}·灰保${expiredItems.length}·高ROI${highItems.length}`;
         const pushLines = finalReportText
           .split(/\r?\n/)
           .map((l) => l.trim())
@@ -3826,11 +4046,17 @@
   function evaluateNow() {
     if (!config.enabled) return;
 
-    // 检测 SPA 路由切换，自动刷新当前页绑定展示
+    // 检测 SPA 路由切换，自动刷新当前页绑定展示并清空旧页面的趋势基线与大盘缓存（避免跨页算错涨跌幅）
     const curPageKey = getPageBindingKey();
     if (healthState.lastPageKey && healthState.lastPageKey !== curPageKey) {
       healthState.lastPageKey = curPageKey;
       healthState.lastAutoBindAt = 0;
+      healthState.trendSamples = [];
+      healthState.lastSummarySnapshot = null;
+      healthState.lastOverallRoi = null;
+      healthState.lastOverallRoiAt = 0;
+      healthState.lastOverallCost = null;
+      healthState.lastOverallCostAt = 0;
       renderSelectorPreview();
     } else if (!healthState.lastPageKey) {
       healthState.lastPageKey = curPageKey;
@@ -3867,35 +4093,27 @@
       }
       let val = el ? parseMetricNumber(readElementMetricText(el)) : null;
 
-      // 当前页未绑定、切页后失效或异步指标卡刚渲染完成时，每 3 秒自动重探一次整体 ROI 指标卡
-      if (!el || val === null) {
+      // 当前页未绑定、切页后失效、异步加载中或误绑到值为 0 的节点时，每 3 秒自动重探真正的整体 ROI 指标卡
+      if (!el || val === null || val === 0) {
         const nowTs = Date.now();
         if (nowTs - healthState.lastAutoBindAt >= 3000) {
           healthState.lastAutoBindAt = nowTs;
           const found = autoFindRoiElement();
-          if (found) {
+          const foundNum = found ? parseMetricNumber(found.value) : null;
+          if (found && (val === null || (foundNum !== null && foundNum > 0))) {
             setActivePageBinding(found.selector, found.label);
             binding = { selector: found.selector, label: found.label };
             el = found.el;
-            val = parseMetricNumber(found.value);
+            val = foundNum;
           }
         }
       }
 
-      if (!binding.selector) {
-        singleStatus = "warn";
-        singleValueText = "未绑定";
-        singleSubText = "整体ROI未绑定";
-      } else if (!el) {
-        singleStatus = "warn";
-        singleValueText = "未找到";
-        singleSubText = "整体ROI暂不在当前视图";
-      } else if (val === null) {
-        singleStatus = "warn";
-        singleValueText = "无数字";
-        singleSubText = `读取到：${normalizeText(readElementMetricText(el)).slice(0, 16)}`;
-      } else {
-        const label = binding.label || "整体 ROI";
+      if (val !== null && val > 0) {
+        const label = (binding.label || "整体 ROI").replace(/\s*(重要|核心|推荐|新)$/g, "").trim() || "整体 ROI";
+        healthState.lastOverallRoi = val;
+        healthState.lastOverallRoiLabel = label;
+        healthState.lastOverallRoiAt = Date.now();
         singleStatus = checkAndAlert("single_roi", label, val, [], batchQueue);
         singleValueText = String(val);
         singleSubText = `${label}: ${val}`;
@@ -3903,6 +4121,33 @@
         singleFp = `S:${val}`;
         singleNumericVal = val;
         singleLabelText = label;
+      } else if (healthState.lastOverallRoi !== null && healthState.lastOverallRoi > 0 && Date.now() - healthState.lastOverallRoiAt <= 15000) {
+        // 防闪烁缓冲：滚动页面把顶部大盘滚出视口或前端短暂加载返回 0 时，15秒内保持上次有效整体ROI不乱闪
+        const label = healthState.lastOverallRoiLabel || "整体 ROI";
+        singleStatus = "ok";
+        singleValueText = String(healthState.lastOverallRoi);
+        singleSubText = `${label}: ${healthState.lastOverallRoi}`;
+        singleValid = true;
+        singleFp = `S:${healthState.lastOverallRoi}`;
+        singleNumericVal = healthState.lastOverallRoi;
+        singleLabelText = label;
+      } else if (val === 0) {
+        // 读到 0 时暂不按跌破发红警（多半为数据加载占位或误绑），等待下次重探或交由表格兜底
+        singleStatus = "warn";
+        singleValueText = "加载中";
+        singleSubText = `${binding.label || "整体 ROI"} 暂为 0，等待刷新`;
+      } else if (!binding.selector) {
+        singleStatus = "warn";
+        singleValueText = "未绑定";
+        singleSubText = "整体ROI未绑定";
+      } else if (!el) {
+        singleStatus = "warn";
+        singleValueText = "未找到";
+        singleSubText = "整体ROI暂不在当前视图";
+      } else {
+        singleStatus = "warn";
+        singleValueText = "无数字";
+        singleSubText = `读取到：${normalizeText(readElementMetricText(el)).slice(0, 16)}`;
       }
     }
 
@@ -4062,7 +4307,7 @@
         if (costSkipped > 0) filterNotes.push(`低于消耗门槛¥${minCost}过滤${costSkipped}条`);
         const filterNoteStr = filterNotes.length > 0 ? `（${filterNotes.join("，")}）` : "";
         const rangeText = activeCount > 0 ? `ROI ${minRoi}~${maxRoi}` : `0条达标${filterNoteStr}`;
-        const costNote = costAlertCount > 0 ? `，撞墙 ${costAlertCount} 条` : "";
+        const costNote = costAlertCount > 0 ? `，预算不足 ${costAlertCount} 条` : "";
         const expNote = expiredCount > 0 ? `，过保 ${expiredCount} 条` : "";
         const colHint = meta ? ` · 列[${meta.nameHeader}|${meta.costHeader}|${meta.roiHeader}]` : "";
         $("tableScanSummary").textContent = `已识别 ${rows.length} 条，达标 ${activeCount} 条，异常 ${alertCount} 条${costNote}${expNote}${filterNoteStr}${activeCount > 0 ? `（${rangeText}）` : ""}${colHint}`;
@@ -4097,9 +4342,50 @@
       }
     } else if (overallCostBox) {
       overallCostBox.textContent = config.costAlertEnabled
-        ? `预算撞墙已开启（${config.budgetWarnPercent || 80}% 提醒加预算，自动读预算列；设整体上限可同步盯全店消耗）`
-        : "预算撞墙预警已关闭";
+        ? `预算提醒已开启（${config.budgetWarnPercent || 80}% 提醒加预算，自动读预算列；设整体上限可同步盯全店消耗）`
+        : "计划预算提醒已关闭";
       overallCostBox.style.color = "#8c98b3";
+    }
+
+    // 千川可用余额监测（防余额不足导致计划断流，滚动页面离开顶部后保持上次有效余额避免闪烁消失）
+    let currentBalance = null;
+    let currentBalanceLabel = "可用余额";
+    const foundBalance = autoFindAccountBalanceElement();
+    if (foundBalance && Number.isFinite(foundBalance.value)) {
+      currentBalance = foundBalance.value;
+      currentBalanceLabel = foundBalance.label || "可用余额";
+      healthState.lastAccountBalance = currentBalance;
+      healthState.lastAccountBalanceLabel = currentBalanceLabel;
+      healthState.lastAccountBalanceAt = Date.now();
+    } else if (healthState.lastAccountBalance !== null) {
+      currentBalance = healthState.lastAccountBalance;
+      currentBalanceLabel = healthState.lastAccountBalanceLabel || "可用余额";
+    }
+    const balThreshold =
+      config.balanceWarnThreshold !== "" && config.balanceWarnThreshold !== null
+        ? Number(config.balanceWarnThreshold)
+        : 1000;
+    const isBalanceLow =
+      Boolean(config.balanceAlertEnabled) &&
+      currentBalance !== null &&
+      Number.isFinite(balThreshold) &&
+      balThreshold > 0 &&
+      currentBalance <= balThreshold;
+    if (isBalanceLow) {
+      const balLevel = checkAndAlertBalance(currentBalance, balThreshold, currentBalanceLabel);
+      overallCostStatusLevel = mergeStatus(overallCostStatusLevel, balLevel);
+    }
+    const balHintEl = $("balanceStatusHint");
+    if (balHintEl) {
+      if (currentBalance !== null) {
+        balHintEl.textContent = isBalanceLow
+          ? `⚠️ ${currentBalanceLabel} ${formatCompactCost(currentBalance)}（低于 ¥${balThreshold}，请充值）`
+          : `${currentBalanceLabel}：${formatCompactCost(currentBalance)}（预警线 ¥${balThreshold}）`;
+        balHintEl.style.color = isBalanceLow ? "#fca5a5" : "#86efac";
+      } else {
+        balHintEl.textContent = "可用余额：当前页未识别到顶部余额";
+        balHintEl.style.color = "#8c98b3";
+      }
     }
 
     // 统一发送本轮触发的告警（单条直发，多条按类型合并为一条摘要）
@@ -4119,21 +4405,29 @@
     };
     const totalRowCostCur = latestFilteredRows.reduce((acc, r) => acc + (r.cost || 0), 0);
     const validRoiCur = latestFilteredRows.filter((r) => r.roi !== null);
+    const weightedRoiRows = validRoiCur.filter((r) => r.cost !== null && r.cost > 0);
+    const weightedCostSum = weightedRoiRows.reduce((a, r) => a + r.cost, 0);
+    const weightedGmvSum = weightedRoiRows.reduce((a, r) => a + r.roi * r.cost, 0);
+    const isWeightedFallback = weightedCostSum > 0;
     const avgRoiCur =
-      validRoiCur.length > 0
-        ? Math.round((validRoiCur.reduce((a, r) => a + r.roi, 0) / validRoiCur.length) * 100) / 100
-        : null;
+      weightedCostSum > 0
+        ? Math.round((weightedGmvSum / weightedCostSum) * 100) / 100
+        : validRoiCur.length > 0
+          ? Math.round((validRoiCur.reduce((a, r) => a + r.roi, 0) / validRoiCur.length) * 100) / 100
+          : null;
+    const curRoiSource = singleNumericVal !== null ? "overall" : isWeightedFallback ? "weighted" : "simple_avg";
     const curDisplayRoi = singleNumericVal !== null ? singleNumericVal : avgRoiCur;
     const curEffCost = foundOverallCost ? foundOverallCost.value : totalRowCostCur > 0 ? totalRowCostCur : null;
     const hasValidDataForSummary = singleValid || tableValid;
     if (hasValidDataForSummary) {
       const nowSum = Date.now();
-      recordTrendSample(curDisplayRoi, curEffCost, latestFilteredRows);
+      recordTrendSample(curDisplayRoi, curEffCost, latestFilteredRows, curRoiSource);
 
-      if (!healthState.lastSummarySnapshot) {
+      if (!healthState.lastSummarySnapshot || healthState.lastSummarySnapshot.roiSource !== curRoiSource) {
         healthState.lastSummarySnapshot = {
           ts: nowSum,
           displayRoi: curDisplayRoi,
+          roiSource: curRoiSource,
           effectiveCost: curEffCost,
           activeCount: latestFilteredRows.length,
         };
@@ -4148,14 +4442,16 @@
     }
     updateSummaryNextHint();
 
-    // 更新日常盯盘 4 格核心数据看板（ROI / 消耗 / 预算水位 / 在投巡检）
+    // 更新日常盯盘 3 格核心数据看板（整体 ROI / 消耗+余额 / 在投巡检）
     updateDashboardKpiCards({
       displayRoi: curDisplayRoi,
-      roiLabel: singleNumericVal !== null ? singleLabelText : "计划均 ROI",
+      roiSource: curRoiSource,
+      roiLabel: singleNumericVal !== null ? singleLabelText : isWeightedFallback ? "本页加权ROI" : "本页均ROI",
       roiStatus: singleStatus !== "idle" ? singleStatus : tableStatus,
       effectiveCost: curEffCost,
-      costLabel: foundOverallCost ? foundOverallCost.label || "整体消耗" : "在投列表消耗",
-      overallCap,
+      costLabel: foundOverallCost ? foundOverallCost.label || "整体消耗" : "本页在投消耗",
+      accountBalance: currentBalance,
+      isBalanceLow,
       filteredRows: latestFilteredRows,
       abnormalItems,
     });
@@ -4169,10 +4465,19 @@
 
     const limitHint = `区间[${config.lowerLimit || "-∞"}, ${config.upperLimit || "+∞"}]`;
     if (config.mode === "both") {
-      const combinedStatus = mergeStatus(mergeStatus(mergeStatus(singleStatus, tableStatus), overallCostStatusLevel), anomalyLevel);
+      // 当页面没有顶部整体 ROI 卡片（或当前为空）但计划列表正常时，使用消耗加权 ROI 兜底展示，避免误报「整体 无数字」
+      const fallbackSingleActive = !singleValid && tableValid && avgRoiCur !== null;
+      const effectiveSingleStatus = fallbackSingleActive ? "ok" : singleStatus;
+      const effectiveSingleTitle = fallbackSingleActive
+        ? `${isWeightedFallback ? "加权ROI" : "均ROI"} ${avgRoiCur}`
+        : `整体 ${singleValueText}`;
+      const combinedStatus = mergeStatus(
+        mergeStatus(mergeStatus(effectiveSingleStatus, tableStatus), overallCostStatusLevel),
+        anomalyLevel
+      );
       updateDisplay(
         combinedStatus,
-        `整体 ${singleValueText} · ${tableValueText}`,
+        `${effectiveSingleTitle} · ${tableValueText}`,
         `${limitHint} | ${tableSubText || singleSubText}`
       );
     } else if (config.mode === "single") {
@@ -4184,11 +4489,13 @@
 
   function updateDashboardKpiCards({
     displayRoi,
+    roiSource,
     roiLabel,
     roiStatus,
     effectiveCost,
     costLabel,
-    overallCap,
+    accountBalance,
+    isBalanceLow,
     filteredRows,
     abnormalItems,
   }) {
@@ -4197,9 +4504,13 @@
 
     const lower = config.lowerLimit !== "" && config.lowerLimit !== null ? Number(config.lowerLimit) : null;
     const upper = config.upperLimit !== "" && config.upperLimit !== null ? Number(config.upperLimit) : null;
-    const baseSample = healthState.trendSamples?.[0] || healthState.lastSummarySnapshot || null;
+    // 只与同口径基线（overall 对 overall、weighted 对 weighted）比涨跌，杜绝切视图或兜底时出现虚假大幅涨跌
+    const sameSourceSample =
+      (healthState.trendSamples || []).find((s) => s && s.roiSource === roiSource && s.displayRoi !== null) ||
+      (healthState.lastSummarySnapshot?.roiSource === roiSource ? healthState.lastSummarySnapshot : null);
+    const costBaseSample = healthState.trendSamples?.[0] || healthState.lastSummarySnapshot || null;
 
-    // 1. 整体 / 均 ROI
+    // 1. 整体 ROI（官方全账户大盘优先；无大盘卡时明确标为「仅当前页加权」）
     $("dashRoiLabel").textContent = (roiLabel || "整体 ROI").slice(0, 10);
     roiValEl.textContent = displayRoi !== null && displayRoi !== undefined ? String(displayRoi) : "--";
     let roiCls = "";
@@ -4209,68 +4520,64 @@
       else roiCls = " ok";
     }
     roiValEl.className = `kpi-value${roiCls}`;
-    if (baseSample && baseSample.displayRoi !== null && baseSample.displayRoi !== undefined && displayRoi !== null) {
-      const diff = Math.round((displayRoi - baseSample.displayRoi) * 100) / 100;
+    if (sameSourceSample && sameSourceSample.displayRoi !== null && sameSourceSample.displayRoi !== undefined && displayRoi !== null) {
+      const diff = Math.round((displayRoi - sameSourceSample.displayRoi) * 100) / 100;
       $("dashRoiDelta").textContent = diff > 0 ? `▲+${diff}` : diff < 0 ? `▼${diff}` : "持平";
       $("dashRoiDelta").style.color = diff > 0 ? "#4ade80" : diff < 0 ? "#f87171" : "#94a3b8";
     } else {
       $("dashRoiDelta").textContent = "";
     }
-    $("dashRoiSub").textContent = `区间 [${config.lowerLimit || "-∞"} ~ ${config.upperLimit || "+∞"}]`;
+    const roiSourceHint =
+      roiSource === "overall"
+        ? "官方全量"
+        : roiSource === "weighted"
+          ? `仅本页${(filteredRows || []).length}条`
+          : "仅本页均值";
+    $("dashRoiSub").textContent = `区间 [${config.lowerLimit || "-∞"} ~ ${config.upperLimit || "+∞"}] · ${roiSourceHint}`;
 
     // 2. 当前消耗
     $("dashCostLabel").textContent = (costLabel || "当前消耗").slice(0, 10);
-    $("dashCostVal").textContent = effectiveCost !== null && effectiveCost !== undefined ? formatCostDisplay(effectiveCost) : "--";
-    if (baseSample && baseSample.effectiveCost !== null && baseSample.effectiveCost !== undefined && effectiveCost !== null) {
-      const burn = Math.max(0, effectiveCost - baseSample.effectiveCost);
-      $("dashCostDelta").textContent = burn > 0 ? `+${formatCostDisplay(burn)}` : "";
+    $("dashCostVal").textContent = effectiveCost !== null && effectiveCost !== undefined ? formatCompactCost(effectiveCost) : "--";
+    if (costBaseSample && costBaseSample.effectiveCost !== null && costBaseSample.effectiveCost !== undefined && effectiveCost !== null) {
+      const burn = Math.max(0, effectiveCost - costBaseSample.effectiveCost);
+      $("dashCostDelta").textContent = burn > 0 ? `+${formatCompactCost(burn)}` : "";
       $("dashCostDelta").style.color = "#38bdf8";
     } else {
       $("dashCostDelta").textContent = "";
     }
     const validRoiRows = (filteredRows || []).filter((r) => r.roi !== null);
-    $("dashCostSub").textContent =
+    const costSubEl = $("dashCostSub");
+    costSubEl.textContent =
       validRoiRows.length > 0
-        ? `在投 ${filteredRows.length} 条 · 门槛 ≥¥${Number(config.minCost || 0)}`
+        ? `本页在投 ${filteredRows.length} 条 · 门槛 ≥¥${Number(config.minCost || 0)}`
         : "等待读取消耗数据";
+    costSubEl.className = "kpi-sub";
 
-    // 3. 预算水位
-    const budgetRows = (filteredRows || []).filter((r) => r.budget && r.budget > 0);
-    const sumBudget = budgetRows.reduce((acc, r) => acc + (r.budget || 0), 0);
-    const sumBudgetCost = budgetRows.reduce((acc, r) => acc + (r.cost || 0), 0);
-    let usedCost = null;
-    let totalCap = null;
-    let budgetModeLabel = "";
-    if (overallCap && effectiveCost !== null) {
-      usedCost = effectiveCost;
-      totalCap = overallCap;
-      budgetModeLabel = "全店上限";
-    } else if (sumBudget > 0) {
-      usedCost = sumBudgetCost;
-      totalCap = sumBudget;
-      budgetModeLabel = `${budgetRows.length}条预算合计`;
-    }
-    const warnPct = Math.max(1, Math.min(100, Number(config.budgetWarnPercent || 80)));
-    const barFill = $("dashBudgetBar");
-    if (totalCap && totalCap > 0 && usedCost !== null) {
-      const pct = (usedCost / totalCap) * 100;
-      const remain = Math.max(0, totalCap - usedCost);
-      $("dashBudgetPct").textContent = `${pct.toFixed(0)}%`;
-      $("dashBudgetVal").textContent = `剩 ${formatCostDisplay(remain)}`;
-      $("dashBudgetVal").className = `kpi-value${pct >= 100 ? " low" : pct >= warnPct ? " warn" : ""}`;
-      $("dashBudgetSub").textContent = `${budgetModeLabel} ${formatCostDisplay(totalCap)}`;
-      if (barFill) {
-        barFill.style.width = `${Math.min(100, Math.max(0, pct))}%`;
-        barFill.className = `kpi-bar-fill${pct >= 100 ? " hit" : pct >= warnPct ? " warn" : ""}`;
-      }
-    } else {
-      $("dashBudgetPct").textContent = "--";
-      $("dashBudgetVal").textContent = "--";
-      $("dashBudgetVal").className = "kpi-value";
-      $("dashBudgetSub").textContent = `预警线 ${warnPct}% · 未读到预算列`;
-      if (barFill) {
-        barFill.style.width = "0%";
-        barFill.className = "kpi-bar-fill";
+    // 3. 账户可用余额（独立大盘卡，低于预警线红字提醒充值）
+    const balValEl = $("dashBalanceVal");
+    const balTagEl = $("dashBalanceTag");
+    const balSubEl = $("dashBalanceSub");
+    if (balValEl && balTagEl && balSubEl) {
+      const balWarn =
+        config.balanceWarnThreshold !== "" && config.balanceWarnThreshold !== null
+          ? Number(config.balanceWarnThreshold)
+          : 1000;
+      if (accountBalance !== null && accountBalance !== undefined) {
+        balValEl.textContent = formatCompactCost(accountBalance);
+        balValEl.className = `kpi-value${isBalanceLow ? " low" : " ok"}`;
+        balTagEl.textContent = isBalanceLow ? "请充值" : "余额充足";
+        balTagEl.style.color = isBalanceLow ? "#f87171" : "#4ade80";
+        balSubEl.textContent = isBalanceLow
+          ? `⚠️ 低于预警线 ${formatCompactCost(balWarn)}，记得充值`
+          : `预警线 ${formatCompactCost(balWarn)} · 自动盯余额`;
+        balSubEl.className = `kpi-sub${isBalanceLow ? " low" : ""}`;
+      } else {
+        balValEl.textContent = "--";
+        balValEl.className = "kpi-value";
+        balTagEl.textContent = "待读取";
+        balTagEl.style.color = "#94a3b8";
+        balSubEl.textContent = `预警线 ${formatCompactCost(balWarn)} · 滚动到顶部自动读取`;
+        balSubEl.className = "kpi-sub";
       }
     }
 
@@ -4285,7 +4592,7 @@
     $("dashPlanCount").className = `kpi-value${riskCnt > 0 ? " low" : highCnt > 0 ? " high" : " ok"}`;
     $("dashHealthTag").textContent = riskCnt > 0 ? `${riskCnt}项风险` : "运行健康";
     $("dashHealthTag").style.color = riskCnt > 0 ? "#f87171" : "#4ade80";
-    $("dashPlanBreakdown").textContent = `跌破${lowCnt} · 撞墙${costCnt} · 过保${expCnt} · 高ROI ${highCnt}`;
+    $("dashPlanBreakdown").textContent = `跌破${lowCnt} · 预算${costCnt} · 过保${expCnt} · 高ROI ${highCnt}`;
   }
 
   function tryClickPageRefresh() {
@@ -4308,6 +4615,292 @@
     if (refreshBtn) {
       refreshBtn.click();
     }
+  }
+
+  // 一键按「整体消耗 / 调控消耗」由高到低排序（兼容千川乘方、全域、调控任务表）
+  let sortCostRunId = 0;
+
+  function isActiveSortArrowEl(el) {
+    if (!el) return false;
+    const nodes = [el, ...Array.from(el.querySelectorAll("svg, path, polygon, i, span")).slice(0, 6)];
+    for (const node of nodes) {
+      const cls = typeof node.className === "string" ? node.className : (node.className?.baseVal || "");
+      if (/(?:^|[-_\s])(active|selected|on|checked|primary|highlight)(?:$|[-_\s])/i.test(cls) && !/(inactive|unselected|disabled)/i.test(cls)) {
+        return true;
+      }
+      const cs = getComputedStyle(node);
+      const colorStr = `${cs.color || ""} ${cs.fill || ""} ${cs.stroke || ""} ${node.getAttribute?.("fill") || ""} ${node.getAttribute?.("stroke") || ""}`;
+      const matches = colorStr.match(/rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+(?:\s*,\s*[\d.]+)?\s*\)/g) || [];
+      for (const mStr of matches) {
+        const parts = mStr.match(/[\d.]+/g);
+        if (!parts || parts.length < 3) continue;
+        const r = Number(parts[0]);
+        const g = Number(parts[1]);
+        const b = Number(parts[2]);
+        const a = parts.length >= 4 ? Number(parts[3]) : 1;
+        if (a <= 0.2) continue;
+        // 千川/字节表格激活态为蓝色或高亮主色（明显非灰色）
+        if (b - r >= 45 && b >= 140) return true;
+        if (Math.max(r, g, b) - Math.min(r, g, b) >= 60 && b >= 120) return true;
+      }
+    }
+    return false;
+  }
+
+  function detectHeaderSortDirection(th) {
+    if (!th) return "none";
+    const ariaSort = (th.getAttribute("aria-sort") || "").toLowerCase();
+    if (ariaSort === "descending") return "desc";
+    if (ariaSort === "ascending") return "asc";
+
+    const cls = typeof th.className === "string" ? th.className : "";
+    if (/(sorted-desc|sort-desc|is-desc|descending)/i.test(cls)) return "desc";
+    if (/(sorted-asc|sort-asc|is-asc|ascending)/i.test(cls)) return "asc";
+
+    const upEl = th.querySelector(
+      "[class*='sorter-up'], [class*='sort-up'], [class*='arrow-up'], [class*='asc']:not([class*='desc']), .icon-arrow-up"
+    );
+    const downEl = th.querySelector(
+      "[class*='sorter-down'], [class*='sort-down'], [class*='arrow-down'], [class*='desc'], .icon-arrow-down"
+    );
+    if (upEl || downEl) {
+      const upOn = isActiveSortArrowEl(upEl);
+      const downOn = isActiveSortArrowEl(downEl);
+      if (downOn && !upOn) return "desc";
+      if (upOn && !downOn) return "asc";
+    }
+
+    // 兜底：千川 Aurora/Arco 表格排序器常见两个上下叠放的 svg 或 path（上=升序、下=降序）
+    const sortWrap = th.querySelector("[class*='sort'], [class*='sorter']") || th;
+    let arrowCandidates = Array.from(sortWrap.querySelectorAll("svg")).filter((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.width <= 22 && r.height > 0 && r.height <= 22;
+    });
+    if (arrowCandidates.length === 1) {
+      const shapes = Array.from(arrowCandidates[0].querySelectorAll("path, polygon")).filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+      if (shapes.length === 2) arrowCandidates = shapes;
+    }
+    if (arrowCandidates.length === 2) {
+      arrowCandidates.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+      const topOn = isActiveSortArrowEl(arrowCandidates[0]);
+      const botOn = isActiveSortArrowEl(arrowCandidates[1]);
+      if (botOn && !topOn) return "desc";
+      if (topOn && !botOn) return "asc";
+    }
+    return "none";
+  }
+
+  function getTableCostSortState() {
+    const scanRes = scanCampaignTables();
+    const costs = (scanRes.rows || [])
+      .map((r) => r.cost)
+      .filter((c) => c !== null && Number.isFinite(c));
+    if (costs.length < 2) return "unknown";
+
+    const sample = costs.slice(0, Math.min(costs.length, 20));
+    const first = sample[0];
+    const last = sample[sample.length - 1];
+    const allMax = Math.max(...costs);
+    const knownOverallCost =
+      healthState.lastOverallCost !== null && healthState.lastOverallCost > 0
+        ? healthState.lastOverallCost
+        : autoFindOverallCostElement()?.value || 0;
+
+    // 整页可见行全是 0.00，但账户/表格总消耗明显大于 0 → 必然是被排成升序了！
+    if (allMax === 0) {
+      return knownOverallCost >= 10 ? "asc" : "unknown";
+    }
+
+    let upJumps = 0;
+    for (let i = 0; i < sample.length - 1; i++) {
+      if (sample[i + 1] > sample[i] + 0.05) upJumps++;
+    }
+    if (first > 0 && first >= allMax * 0.98 && first >= last && upJumps <= 1) {
+      return "desc";
+    }
+    if ((first === 0 && allMax > 0) || (first < allMax * 0.8 && first <= last)) {
+      return "asc";
+    }
+    return "unsorted";
+  }
+
+  function getCombinedCostSortState(th) {
+    const domDir = detectHeaderSortDirection(th);
+    const dataDir = getTableCostSortState();
+    // 真实行数据明确为升序（例如 0.00 排在最前面）时，以数据事实为准
+    if (dataDir === "asc") return "asc";
+    if (domDir === "desc") return "desc";
+    if (domDir === "asc") return "asc";
+    if (dataDir === "desc") return "desc";
+    return "none";
+  }
+
+  function isHeaderSortedDesc(th) {
+    return getCombinedCostSortState(th) === "desc";
+  }
+
+  function findCostHeaderTh() {
+    const costKws = splitKeywords(config.costHeaderKeyword, "调控消耗,整体消耗,总消耗,消耗");
+    const headers = Array.from(
+      document.querySelectorAll("thead th, [role='columnheader'], .aurora-qc-table-header th, .ovui-table-thead th")
+    ).filter((el) => isVisible(el));
+
+    let bestTh = null;
+    let bestScore = -1;
+    for (const th of headers) {
+      const raw = normalizeText(th.innerText || th.textContent);
+      if (!raw || raw.length > 22) continue;
+      const pure = raw.replace(/[\s(（)）元￥¥]/g, "").toLowerCase();
+      if (COST_EXCLUDE_RE.test(pure)) continue;
+      const kwIdx = costKws.findIndex((k) => pure.includes(k.toLowerCase()));
+      if (kwIdx === -1) continue;
+      let score = 100 - kwIdx * 15;
+      if (/^(调控消耗|整体消耗|总消耗|消耗)$/.test(pure)) score += 60;
+      if (th.querySelector("[class*='sort'], svg")) score += 40;
+      if (score > bestScore) {
+        bestScore = score;
+        bestTh = th;
+      }
+    }
+    return bestTh;
+  }
+
+  function getCostSortClickTarget(th) {
+    if (!th) return null;
+    const downBtn = th.querySelector(
+      "[class*='sorter-down'], [class*='sort-down'], [aria-label*='降序'], [title*='降序']"
+    );
+    return (
+      downBtn ||
+      th.querySelector("[class*='sorter'], [class*='sort-trigger'], [class*='sort-icon'], button, [role='button']") ||
+      th
+    );
+  }
+
+  function trySortTableByCostDesc(silent = false) {
+    const bestTh = findCostHeaderTh();
+    if (!bestTh) {
+      if (!silent) showToast("当前页未找到可排序的「消耗」列头，请手动点表头排序", 3000);
+      return false;
+    }
+
+    const colName = normalizeText(bestTh.innerText || bestTh.textContent).slice(0, 10) || "消耗";
+    if (getCombinedCostSortState(bestTh) === "desc") {
+      if (!silent) showToast(`当前表格已按「${colName}」由高到低排序 ✓`, 2200);
+      return true;
+    }
+
+    const runId = ++sortCostRunId;
+    const maxClicks = 3;
+
+    const runStep = (clicksDone) => {
+      if (runId !== sortCostRunId) return;
+      const th = findCostHeaderTh();
+      if (!th) return;
+
+      if (clicksDone > 0) {
+        const state = getCombinedCostSortState(th);
+        if (state === "desc") {
+          if (config.enabled) evaluateNow();
+          if (!silent) showToast(`已按「${colName}」由高到低排序 ✓`, 2400);
+          return;
+        }
+        if (clicksDone >= maxClicks) {
+          if (config.enabled) evaluateNow();
+          if (!silent) showToast(`已尝试切换「${colName}」降序，如未生效可手动点一下表头箭头`, 3000);
+          return;
+        }
+      }
+
+      const target = getCostSortClickTarget(th);
+      if (!target) return;
+      target.click();
+
+      // 等待千川接口返回并重绘表格行后，再基于表头箭头 + 真实消耗行数据二次校验
+      setTimeout(() => runStep(clicksDone + 1), 950);
+    };
+
+    if (!silent) showToast(`正在将「${colName}」切为由高到低排序…`, 1800);
+    runStep(0);
+    return true;
+  }
+
+  // 一键切换千川分页「每页显示条数」（支持 10 / 20 / 50 / 100，默认 100，兼容投放页与调控页）
+  function trySetTablePageSize(targetSize = 100, silent = false, onComplete = null) {
+    const sizeNum = Number(targetSize) || 100;
+    const sizeTextRe = /^(?:每页\s*)?(10|20|30|40|50|100|200)\s*条(?:\/页)?$/;
+    const pagContainers = Array.from(
+      document.querySelectorAll(
+        "[class*='pagination'], [class*='pager'], .aurora-pagination, .ovui-pagination, .byted-pagination"
+      )
+    ).filter((el) => isVisible(el));
+
+    let triggerEl = null;
+    let currentSize = null;
+    const searchRoots = pagContainers.length > 0 ? pagContainers : [document.body];
+    for (const rootEl of searchRoots) {
+      const candidates = Array.from(
+        rootEl.querySelectorAll("button, [role='combobox'], [role='button'], [class*='select'], span, div")
+      ).filter((el) => {
+        if (!isVisible(el)) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width < 42 || r.width > 220 || r.height < 18 || r.height > 54) return false;
+        const t = normalizeText(el.innerText || el.textContent);
+        return sizeTextRe.test(t);
+      });
+      if (candidates.length > 0) {
+        // 优先取更贴近触发器的外层 select 容器或最小可点击节点
+        candidates.sort((a, b) => a.querySelectorAll("*").length - b.querySelectorAll("*").length);
+        const picked = candidates[0];
+        const m = normalizeText(picked.innerText || picked.textContent).match(sizeTextRe);
+        currentSize = m ? Number(m[1]) : null;
+        triggerEl = picked.closest?.("[class*='select'], [role='combobox'], button") || picked;
+        break;
+      }
+    }
+
+    if (!triggerEl) {
+      if (!silent) showToast("当前页未找到分页条数选择器（可能已展示全部或未滚动到底部）", 3000);
+      if (typeof onComplete === "function") setTimeout(() => onComplete(false), 150);
+      return false;
+    }
+
+    if (currentSize === sizeNum) {
+      if (!silent) showToast(`当前已是每页 ${sizeNum} 条 ✓`, 2200);
+      if (typeof onComplete === "function") setTimeout(() => onComplete(false), 150);
+      return true;
+    }
+
+    triggerEl.click();
+    setTimeout(() => {
+      const optRe = new RegExp(`^(?:每页\\s*)?${sizeNum}\\s*条(?:\\/页)?$`);
+      const opts = Array.from(
+        document.querySelectorAll(
+          "[role='option'], [class*='select-option'], [class*='dropdown-item'], [class*='menu-item'], li"
+        )
+      ).filter((el) => {
+        if (!isVisible(el) || el === triggerEl || triggerEl.contains(el)) return false;
+        const t = normalizeText(el.innerText || el.textContent);
+        return optRe.test(t);
+      });
+      if (opts.length > 0) {
+        opts[opts.length - 1].click();
+        if (!silent) showToast(`已将当前页切换为每页 ${sizeNum} 条 ✓`, 2600);
+        setTimeout(() => {
+          if (config.enabled) evaluateNow();
+          if (typeof onComplete === "function") onComplete(true);
+        }, 1200);
+      } else {
+        // 点空白处收回下拉，避免遮挡页面
+        document.body.click();
+        if (!silent) showToast(`未找到「${sizeNum} 条/页」选项，可手动切换或在面板改选 50 条`, 3200);
+        if (typeof onComplete === "function") setTimeout(() => onComplete(false), 200);
+      }
+    }, 240);
+    return true;
   }
 
   // ---------- 安全 DOM 诊断（不含 Cookie / Token） ----------
@@ -4395,7 +4988,7 @@
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
         evaluateNow();
-      }, 250);
+      }, 900);
     });
     observer.observe(document.body, {
       childList: true,
@@ -4403,7 +4996,7 @@
       characterData: true,
     });
 
-    pollTimer = setInterval(evaluateNow, 1000);
+    pollTimer = setInterval(evaluateNow, 2000);
 
     if ((config.mode === "table" || config.mode === "both") && config.autoClickRefresh) {
       const sec = Math.max(15, Number(config.refreshIntervalSec || 60));
@@ -4411,6 +5004,12 @@
     }
 
     syncMonitorButton();
+    if (config.autoOptimizeViewOnStart !== false && (config.mode === "table" || config.mode === "both")) {
+      const targetSize = Number(config.preferredPageSize || 100);
+      trySetTablePageSize(targetSize, true, () => {
+        if (config.enabled) trySortTableByCostDesc(true);
+      });
+    }
     evaluateNow();
   }
 
@@ -4594,11 +5193,16 @@
     const filter = config.abnormalFilter || "all";
     const sortMode = config.abnormalSort || "table";
 
+    const q = normalizeText(healthState.abnormalSearchQuery || "").toLowerCase();
     let filtered = allAbnormalItems.filter((item) => {
-      if (filter === "low") return item.direction === "low";
-      if (filter === "high") return item.direction === "high";
-      if (filter === "cost") return item.direction === "cost_warn" || item.direction === "cost_hit";
-      if (filter === "expired") return item.direction === "expired";
+      if (filter === "low" && item.direction !== "low") return false;
+      if (filter === "high" && item.direction !== "high") return false;
+      if (filter === "cost" && item.direction !== "cost_warn" && item.direction !== "cost_hit") return false;
+      if (filter === "expired" && item.direction !== "expired") return false;
+      if (q) {
+        const hay = `${item.name || ""} #${item.rowOrder || ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
       return true;
     });
 
@@ -4664,7 +5268,7 @@
     $("filterAllPill").textContent = `全部 ${totalItems.length}`;
     $("filterLowPill").textContent = `跌破 ${lowCount}`;
     $("filterHighPill").textContent = `突破 ${highCount}`;
-    $("filterCostPill").textContent = `撞墙 ${costCount}`;
+    $("filterCostPill").textContent = `预算不足 ${costCount}`;
     $("filterExpiredPill").textContent = `过保 ${expiredCount}`;
     $("filterAllPill").classList.toggle("active", filter === "all");
     $("filterLowPill").classList.toggle("active", filter === "low");
@@ -4676,7 +5280,8 @@
     $("sortOrderToggle").textContent = sortMode === "table" ? "顺序：表格↑↓" : "顺序：极值";
 
     // 用紧凑签名避免无变化时反复重绘导致滚动条跳回顶部
-    const renderSig = `${filter}|${sortMode}|` + latestAbnormalItems
+    const searchSig = normalizeText(healthState.abnormalSearchQuery || "").toLowerCase();
+    const renderSig = `${filter}|${sortMode}|${searchSig}|` + latestAbnormalItems
       .map((i) => `${i.id}:${i.rowOrder}:${i.direction}:${i.guaranteeState ?? ""}:${i.roi ?? ""}:${i.cost ?? ""}:${i.budgetPct ? i.budgetPct.toFixed(1) : ""}`)
       .join("|");
     if (list.dataset.sig !== renderSig) {
@@ -4695,7 +5300,7 @@
               const remain = Math.max(0, (item.budget || 0) - (item.cost || 0));
               const pctText = Number.isFinite(item.budgetPct) ? `${item.budgetPct.toFixed(1)}%` : "";
               metaText = `消耗 ${formatCostDisplay(item.cost)} / 预算 ${formatCostDisplay(item.budget)} (${pctText} · 剩${formatCostDisplay(remain)}，请加预算)`;
-              pillText = item.direction === "cost_hit" ? "🚨已撞墙" : `⚡撞墙${Math.round(item.budgetPct || 0)}%`;
+              pillText = item.direction === "cost_hit" ? "🚨预算已满" : `⚡预算${Math.round(item.budgetPct || 0)}%`;
             } else if (isExpired) {
               const roiStr = item.roi !== null ? `ROI ${item.roi}` : "ROI -";
               const costStr = item.cost !== null ? ` · 消耗 ${formatCostDisplay(item.cost)}` : "";
@@ -5063,7 +5668,7 @@
     const dirParts = [];
     if (onLow) dirParts.push("跌破");
     if (onHigh) dirParts.push("突破");
-    if (onCost) dirParts.push("撞墙");
+    if (onCost) dirParts.push("预算");
     if (onExpired) dirParts.push("过保");
     const dirText = dirParts.length > 0 ? `${dirParts.join("+")}提醒` : "仅页内标亮不提醒";
     if (configured.length === 0) {
@@ -5141,6 +5746,18 @@
   }
 
   function applyChannelsToInputs(skipFocused = false) {
+    // 防串台自愈：若选了 DeepSeek/智谱/通义 等内置厂商，但接口地址残留为其他内置厂商地址（如旧默认豆包地址），自动纠偏
+    const curProvider = config.aiProvider || "doubao";
+    const curPreset = AI_PROVIDER_DEFAULTS[curProvider];
+    if (curPreset && curProvider !== "custom") {
+      const otherPresetUrls = Object.entries(AI_PROVIDER_DEFAULTS)
+        .filter(([k, v]) => k !== curProvider && v.endpoint)
+        .map(([, v]) => v.endpoint);
+      const curEp = String(config.aiEndpoint || "").trim();
+      if (!curEp || otherPresetUrls.includes(curEp)) {
+        config.aiEndpoint = curPreset.endpoint;
+      }
+    }
     const activeEl = shadow.activeElement;
     for (const field of [...CHANNEL_STRING_FIELDS, ...AI_STRING_FIELDS]) {
       const input = $(field);
@@ -5168,18 +5785,23 @@
     $("lowerLimit").value = config.lowerLimit;
     $("upperLimit").value = config.upperLimit;
     $("costAlertEnabled").checked = config.costAlertEnabled !== false;
+    $("balanceAlertEnabled").checked = config.balanceAlertEnabled !== false;
     $("markExpiredGuarantee").checked = config.markExpiredGuarantee !== false;
     $("budgetWarnPercent").value = config.budgetWarnPercent ?? "80";
+    $("balanceWarnThreshold").value = config.balanceWarnThreshold ?? "1000";
     $("overallCostLimit").value = config.overallCostLimit ?? "";
     $("singleCostLimit").value = config.singleCostLimit ?? "";
     $("lowCooldownMin").value = config.lowCooldownMin ?? 30;
     $("highCooldownMin").value = config.highCooldownMin ?? 30;
     $("costCooldownMin").value = config.costCooldownMin ?? 3;
-    $("expiredPushMode").value = config.expiredPushMode || "once";
     $("mergeBatchAlerts").checked = config.mergeBatchAlerts !== false;
     $("summaryReportEnabled").checked = config.summaryReportEnabled !== false;
     $("summaryIntervalMin").value = config.summaryIntervalMin ?? 30;
     $("refreshIntervalSec").value = config.refreshIntervalSec;
+    $("preferredPageSize").value = String(config.preferredPageSize || "100");
+    $("autoOptimizeViewOnStart").checked = config.autoOptimizeViewOnStart !== false;
+    const pageSizeBtn = $("applyPageSizeBtn");
+    if (pageSizeBtn) pageSizeBtn.textContent = `📄 切每页${config.preferredPageSize || "100"}条`;
     $("staleMinutes").value = config.staleMinutes;
     $("onlyDelivering").checked = Boolean(config.onlyDelivering);
     $("onlyRegulating").checked = Boolean(config.onlyRegulating);
@@ -5504,6 +6126,7 @@
       "lowerLimit",
       "upperLimit",
       "budgetWarnPercent",
+      "balanceWarnThreshold",
       "overallCostLimit",
       "singleCostLimit",
       "lowCooldownMin",
@@ -5524,9 +6147,90 @@
       });
     });
 
-    $("expiredPushMode")?.addEventListener("change", (e) => {
-      config.expiredPushMode = e.target.value || "once";
+    $("balanceAlertEnabled")?.addEventListener("change", (e) => {
+      config.balanceAlertEnabled = e.target.checked;
       saveConfig();
+      if (config.enabled) evaluateNow();
+    });
+
+    $("preferredPageSize")?.addEventListener("change", (e) => {
+      config.preferredPageSize = e.target.value || "100";
+      const pageSizeBtn = $("applyPageSizeBtn");
+      if (pageSizeBtn) pageSizeBtn.textContent = `📄 切每页${config.preferredPageSize}条`;
+      saveConfig();
+      trySetTablePageSize(Number(config.preferredPageSize), false);
+    });
+
+    $("autoOptimizeViewOnStart")?.addEventListener("change", (e) => {
+      config.autoOptimizeViewOnStart = e.target.checked;
+      saveConfig();
+    });
+
+    $("sortCostDescBtn")?.addEventListener("click", () => {
+      trySortTableByCostDesc(false);
+    });
+
+    $("applyPageSizeBtn")?.addEventListener("click", () => {
+      const target = Number(config.preferredPageSize || 100);
+      trySetTablePageSize(target, false);
+    });
+
+    $("abnormalSearchInput")?.addEventListener("input", (e) => {
+      healthState.abnormalSearchQuery = e.target.value || "";
+      refreshAbnormalView(allAbnormalItems);
+    });
+
+    $("closeUpdateBannerBtn")?.addEventListener("click", () => {
+      $("updateBanner")?.classList.remove("show");
+    });
+
+    $("checkUpdateBtn")?.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const btn = $("checkUpdateBtn");
+      const banner = $("updateBanner");
+      const textEl = $("updateBannerText");
+      const linkEl = $("updateDownloadLink");
+      if (!isExtensionAlive()) {
+        showToast("插件已刷新，请先按 F5 刷新当前页面后再检查更新", 3200);
+        return;
+      }
+      if (btn) btn.textContent = "检查中...";
+      const res = await new Promise((resolve) => {
+        try {
+          chrome.runtime.sendMessage({ type: "CHECK_EXTENSION_UPDATE" }, (r) =>
+            resolve(r || { ok: false, error: chrome.runtime.lastError?.message || "检查失败" })
+          );
+        } catch (err) {
+          resolve({ ok: false, error: String(err) });
+        }
+      });
+      if (btn) btn.textContent = "更新";
+      if (!res || !res.ok) {
+        if (banner && textEl && linkEl) {
+          textEl.textContent = "暂时连不上官网，可点右侧直接访问 kamisama.si 获取最新版";
+          linkEl.href = "https://www.kamisama.si";
+          linkEl.textContent = "打开官网";
+          banner.classList.add("show");
+        }
+        return;
+      }
+      if (res.hasUpdate) {
+        if (banner && textEl && linkEl) {
+          const notePart = res.notes ? `（${res.notes.slice(0, 36)}）` : "";
+          textEl.textContent = `🎉 发现新版本 v${res.latestVersion}（当前 v${res.currentVersion}）${notePart}：下载解压覆盖原目录，再去扩展中心点刷新即可`;
+          linkEl.href = res.downloadUrl || res.pageUrl;
+          linkEl.textContent = `下载 v${res.latestVersion}`;
+          banner.classList.add("show");
+        }
+      } else {
+        showToast(`当前已是最新版 v${res.currentVersion} ✓`, 3000);
+        if (banner && textEl && linkEl) {
+          textEl.textContent = `当前已是最新版 v${res.currentVersion} ✓（官网最新 v${res.latestVersion}）`;
+          linkEl.href = res.pageUrl || "https://www.kamisama.si";
+          linkEl.textContent = "去官网看看";
+          banner.classList.add("show");
+        }
+      }
     });
 
     // 5 大推送渠道文本字段：监听 input / change / blur，实时写入三层持久化存储并记住历史记录
@@ -5819,9 +6523,21 @@
       if (config.costCooldownMin === undefined || config.costCooldownMin === null || config.costCooldownMin === "") {
         config.costCooldownMin = 3;
       }
-      if (!config.expiredPushMode) config.expiredPushMode = "once";
       if (typeof config.mergeBatchAlerts !== "boolean") config.mergeBatchAlerts = true;
       config.migratedV132 = true;
+      migrated = true;
+    }
+    // 首次升级到 v1.3.3：默认横屏、默认最低消耗门槛 20 元、开启千川可用余额提醒
+    if (!legacyCfg || !legacyCfg.migratedV133) {
+      config.landscapeMode = true;
+      if (Number(config.minCost) === 100 || config.minCost === undefined || config.minCost === null || config.minCost === "") {
+        config.minCost = 20;
+      }
+      if (typeof config.balanceAlertEnabled !== "boolean") config.balanceAlertEnabled = true;
+      if (config.balanceWarnThreshold === undefined || config.balanceWarnThreshold === null || config.balanceWarnThreshold === "") {
+        config.balanceWarnThreshold = "1000";
+      }
+      config.migratedV133 = true;
       migrated = true;
     }
     if (migrated) saveConfig();

@@ -38,7 +38,82 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
+  if (message?.type === "CHECK_EXTENSION_UPDATE") {
+    handleCheckExtensionUpdate()
+      .then((data) => sendResponse({ ok: true, ...data }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
 });
+
+function compareSemver(a, b) {
+  const pa = String(a || "0").replace(/^v/i, "").split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || "0").replace(/^v/i, "").split(".").map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length, 3);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+async function handleCheckExtensionUpdate() {
+  const currentVersion = chrome.runtime.getManifest()?.version || "1.3.3";
+  const pageUrl = "https://www.kamisama.si";
+  const ts = Date.now();
+  let latestVersion = "";
+  let downloadUrl = "";
+  let notes = "";
+
+  // 1) 优先读取官网轻量版本清单 https://www.kamisama.si/version.json
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const resp = await fetch(`${pageUrl}/version.json?t=${ts}`, { signal: controller.signal, cache: "no-store" });
+    clearTimeout(timer);
+    if (resp.ok) {
+      const data = await resp.json().catch(() => null);
+      if (data && data.version) {
+        latestVersion = String(data.version).replace(/^v/i, "").trim();
+        downloadUrl = String(data.downloadUrl || "").trim();
+        notes = String(data.notes || "").trim();
+      }
+    }
+  } catch {
+    // 若官网暂未放置 version.json，自动回退检查主页源码
+  }
+
+  // 2) 回退检测主页 HTML 中的安装包版本号
+  if (!latestVersion) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const resp = await fetch(`${pageUrl}/?t=${ts}`, { signal: controller.signal, cache: "no-store" });
+      clearTimeout(timer);
+      if (resp.ok) {
+        const html = await resp.text();
+        const zipMatch = html.match(/Kamisama-Qianchuan-v(\d+\.\d+\.\d+)\.zip/i);
+        if (zipMatch) {
+          latestVersion = zipMatch[1];
+          downloadUrl = `${pageUrl}/downloads/Kamisama-Qianchuan-v${latestVersion}.zip`;
+        }
+      }
+    } catch {
+      // 网络不可达时返回当前版本与主页入口
+    }
+  }
+
+  const hasUpdate = Boolean(latestVersion && compareSemver(latestVersion, currentVersion) > 0);
+  return {
+    currentVersion,
+    latestVersion: latestVersion || currentVersion,
+    hasUpdate,
+    downloadUrl: downloadUrl || pageUrl,
+    pageUrl,
+    notes,
+    remoteChecked: Boolean(latestVersion),
+  };
+}
 
 async function handleDispatchAlert(payload) {
   const { title, summary, detailLines, level } = payload;
@@ -272,7 +347,15 @@ async function handleGenerateAiSummary(payload) {
   const providerKey = aiConfig.provider || "doubao";
   const preset = AI_PROVIDER_PRESETS[providerKey] || AI_PROVIDER_PRESETS.custom;
   const apiKey = String(aiConfig.apiKey || "").trim();
-  const endpoint = String(aiConfig.endpoint || preset.endpoint || "").trim();
+  const rawEndpoint = String(aiConfig.endpoint || "").trim();
+  // 防串台自愈：选了 DeepSeek/智谱/通义 等内置厂商，但接口地址仍是其他厂商的默认地址（如旧默认豆包地址）时，自动纠偏为当前厂商官方地址
+  const otherPresetEndpoints = Object.entries(AI_PROVIDER_PRESETS)
+    .filter(([k, v]) => k !== providerKey && v.endpoint)
+    .map(([, v]) => v.endpoint);
+  const endpoint =
+    providerKey !== "custom" && (!rawEndpoint || otherPresetEndpoints.includes(rawEndpoint))
+      ? preset.endpoint
+      : rawEndpoint || preset.endpoint || "";
   const model = String(aiConfig.model || preset.defaultModel || "").trim();
 
   if (!apiKey) throw new Error("未填写 AI API Key");
@@ -280,12 +363,12 @@ async function handleGenerateAiSummary(payload) {
   if (!model) throw new Error("未填写模型名称 / 豆包推理接入点 ID");
 
   const systemPrompt = [
-    "你是资深巨量千川资深投流总监（精通千川乘方、商品卡、全域投放与直播间调控）。",
+    "你是资深巨量千川投流总监（精通千川乘方、商品卡、全域投放与直播间调控）。",
     "请根据用户提供的实时投放快照与近30分钟趋势数据，输出一份极度精炼、可直接照做的中文投流总结报告。",
     "严格按以下 4 点输出（总字数控制在 240~380 字以内，不要客套话、不要 Markdown 代码块、每点用换行分段）：",
     "1. 【大盘走势与预判】：结合总ROI、消耗增速与近30分钟变化，判断接下来半小时更可能走稳、走高还是下滑，点出核心风险。",
     "2. 【优质好计划（放量建议）】：点名 1~3 条高ROI或上升趋势的好计划，给出具体动作（加预算/追投/维持）。",
-    "3. 【异常坏计划（止损与撞墙）】：点名跌破下限、快撞预算墙或灰保过保的计划，明确谁该降出价/暂停、谁该马上补预算、谁要盯防跑偏。",
+    "3. 【异常坏计划（止损与预算不足）】：点名跌破下限、预算不足或灰保过保的计划，明确谁该降出价/暂停、谁该马上补预算、谁要盯防跑偏。",
     "4. 【下个30分钟重点动作】：给出 2~3 条按优先级排好的立刻执行指令。",
   ].join("\n");
 
